@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import time
 from pathlib import Path
 from typing import Optional
@@ -28,13 +29,19 @@ def count_lines(abs_path: Path) -> int:
 
 
 def get_file_history(
-    repo: git.Repo, rel_path: str
+    repo: git.Repo,
+    rel_path: str,
+    before_ts: Optional[int] = None,
 ) -> tuple[int, int, int, int, int]:
     """
     Return (days_since_last_commit, commit_count, author_count,
             recent_churn, prev_churn) for a file.
-    recent_churn = commits in the last 90 days.
-    prev_churn   = commits in the 90 days before that (days 91-180 ago).
+
+    If before_ts is given, only commits at or before that Unix timestamp
+    are considered (for --diff historical analysis).
+
+    recent_churn = commits in the last 90 days (relative to before_ts or now).
+    prev_churn   = commits in the 90 days before that.
     Uses `git log --follow` for rename tracking.
     Returns (0, 0, 0, 0, 0) if the file has no history.
     """
@@ -64,7 +71,13 @@ def get_file_history(
     if not entries:
         return 0, 0, 0, 0, 0
 
-    now = int(time.time())
+    # Cap at before_ts if provided
+    if before_ts is not None:
+        entries = [(ts, a) for ts, a in entries if ts <= before_ts]
+        if not entries:
+            return 0, 0, 0, 0, 0
+
+    now = before_ts if before_ts is not None else int(time.time())
     ninety_days = 90 * 86400
 
     latest_ts = entries[0][0]
@@ -75,9 +88,18 @@ def get_file_history(
     recent_cutoff = now - ninety_days
     prev_cutoff = now - 2 * ninety_days
     recent_churn = sum(1 for ts, _ in entries if ts >= recent_cutoff)
-    prev_churn = sum(1 for ts, _ in entries if prev_cutoff <= ts < recent_cutoff)
+    prev_churn   = sum(1 for ts, _ in entries if prev_cutoff <= ts < recent_cutoff)
 
     return days, commit_count, author_count, recent_churn, prev_churn
+
+
+def get_ref_timestamp(repo: git.Repo, ref: str) -> int:
+    """Return the Unix commit timestamp of a git ref."""
+    try:
+        ts_str = repo.git.log(ref, "-1", "--format=%at")
+        return int(ts_str.strip())
+    except Exception:
+        return int(time.time())
 
 
 def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool]:
@@ -146,3 +168,100 @@ def get_complexity(abs_path: Path) -> Optional[float]:
         return sum(r.complexity for r in results) / len(results)
     except Exception:
         return None
+
+
+# ── Dangerous pattern detection ───────────────────────────────────────────────
+
+_DANGEROUS_MODULES = {"pickle", "cPickle", "marshal", "shelve"}
+_DANGEROUS_BUILTINS = {"eval", "exec", "compile"}
+_DANGEROUS_OS_ATTRS = {"system", "popen", "startfile"}
+_SUBPROCESS_FUNCS   = {"call", "run", "Popen", "check_call", "check_output"}
+
+
+def detect_security_smells(abs_path: Path) -> list[str]:
+    """
+    Detect dangerous security patterns in a Python file via AST analysis.
+    Returns a deduplicated list of smell descriptions (empty for non-Python).
+    """
+    if abs_path.suffix.lower() != ".py":
+        return []
+
+    try:
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(abs_path))
+    except Exception:
+        return []
+
+    smells: list[str] = []
+
+    for node in ast.walk(tree):
+        # ── Dangerous imports ─────────────────────────────────────────────────
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in _DANGEROUS_MODULES:
+                    smells.append(f"imports {top}")
+
+        elif isinstance(node, ast.ImportFrom):
+            module = (node.module or "").split(".")[0]
+            if module in _DANGEROUS_MODULES:
+                smells.append(f"imports {module}")
+
+        # ── Dangerous calls ───────────────────────────────────────────────────
+        elif isinstance(node, ast.Call):
+            func = node.func
+
+            # eval() / exec() / compile() as bare names
+            if isinstance(func, ast.Name) and func.id in _DANGEROUS_BUILTINS:
+                smells.append(f"calls {func.id}()")
+
+            elif isinstance(func, ast.Attribute):
+                # os.system() / os.popen() etc.
+                if (
+                    isinstance(func.value, ast.Name)
+                    and func.value.id == "os"
+                    and func.attr in _DANGEROUS_OS_ATTRS
+                ):
+                    smells.append(f"calls os.{func.attr}()")
+
+                # subprocess.*(shell=True)
+                elif func.attr in _SUBPROCESS_FUNCS:
+                    for kw in node.keywords:
+                        if (
+                            kw.arg == "shell"
+                            and isinstance(kw.value, ast.Constant)
+                            and kw.value.value is True
+                        ):
+                            smells.append(f"subprocess.{func.attr}(shell=True)")
+                            break
+
+    # Deduplicate while preserving order
+    return list(dict.fromkeys(smells))
+
+
+# ── Vulture dead-code detection ───────────────────────────────────────────────
+
+def run_vulture(abs_path: Path) -> int:
+    """
+    Run vulture on a Python file and return the count of high-confidence
+    unused functions, classes, and variables.
+    Returns 0 for non-Python files or if vulture is unavailable / fails.
+    """
+    if abs_path.suffix.lower() != ".py":
+        return 0
+    try:
+        import vulture as _vlt  # noqa: F401
+        from vulture import Vulture
+
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+        v = Vulture(min_confidence=80)
+        v.scan(source, filename=str(abs_path))
+        unused = list(v.get_unused_code(min_confidence=80))
+        return sum(
+            1 for item in unused
+            if getattr(item, "typ", "") in ("function", "class", "variable")
+        )
+    except ImportError:
+        return 0
+    except Exception:
+        return 0

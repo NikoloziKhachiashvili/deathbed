@@ -127,11 +127,11 @@ def _score_color(score: int) -> str:
 def _score_bar(score: int, width: int = 18) -> Text:
     """A compact coloured block progress bar for a 0-100 score."""
     filled = round(score / 100 * width)
-    empty = width - filled
-    color = _score_color(score)
+    empty  = width - filled
+    color  = _score_color(score)
     bar = Text()
     bar.append("█" * filled, style=f"bold {color}")
-    bar.append("░" * empty, style=C_DIM)
+    bar.append("░" * empty,  style=C_DIM)
     bar.append(f"  {score:3d}", style=color)
     return bar
 
@@ -149,7 +149,7 @@ def _human_days(days: int) -> str:
     if days < 365:
         months = days // 30
         return f"{months}mo ago"
-    years = days // 365
+    years    = days // 365
     leftover = (days % 365) // 30
     return f"{years}y {leftover}mo ago" if leftover else f"{years}y ago"
 
@@ -210,18 +210,16 @@ def render_summary(
     elapsed: float,
 ) -> None:
     """Display the post-scan summary stats panel."""
-    critical = sum(1 for m in results if m.status == "CRITICAL")
-    warning  = sum(1 for m in results if m.status == "WARNING")
-    fair     = sum(1 for m in results if m.status == "FAIR")
-    healthy  = sum(1 for m in results if m.status == "HEALTHY")
+    critical      = sum(1 for m in results if m.status == "CRITICAL")
+    warning       = sum(1 for m in results if m.status == "WARNING")
+    fair          = sum(1 for m in results if m.status == "FAIR")
+    healthy       = sum(1 for m in results if m.status == "HEALTHY")
+    dead_code_ct  = sum(1 for m in results if m.dead_code_count > 0)
+    sec_smell_ct  = sum(1 for m in results if m.has_security_smell)
 
     grid = Table.grid(expand=True, padding=(0, 2))
-    grid.add_column(justify="center")
-    grid.add_column(justify="center")
-    grid.add_column(justify="center")
-    grid.add_column(justify="center")
-    grid.add_column(justify="center")
-    grid.add_column(justify="center")
+    for _ in range(8):
+        grid.add_column(justify="center")
 
     def _stat(icon: str, label: str, value: str, color: str) -> Text:
         t = Text(justify="center")
@@ -231,12 +229,14 @@ def render_summary(
         return t
 
     grid.add_row(
-        _stat("🔍", "scanned", str(total_scanned), C_WHITE),
-        _stat("💀", "critical", str(critical), C_SKULL),
-        _stat("⚠️ ", "warning",  str(warning),  C_ORANGE),
-        _stat("🌡 ", "fair",     str(fair),     C_AMBER),
-        _stat("✅", "healthy",  str(healthy),  C_GREEN),
-        _stat("⏱ ", "duration", f"{elapsed:.2f}s", C_GREY),
+        _stat("🔍", "scanned",    str(total_scanned), C_WHITE),
+        _stat("💀", "critical",   str(critical),      C_SKULL),
+        _stat("⚠️ ", "warning",   str(warning),       C_ORANGE),
+        _stat("🌡 ", "fair",      str(fair),           C_AMBER),
+        _stat("✅", "healthy",    str(healthy),        C_GREEN),
+        _stat("🧟", "dead code",  str(dead_code_ct),   C_ORANGE),
+        _stat("🔐", "sec smells", str(sec_smell_ct),   C_RED1),
+        _stat("⏱ ", "duration",  f"{elapsed:.2f}s",   C_GREY),
     )
 
     panel = Panel(
@@ -274,27 +274,28 @@ def render_table(results: list[FileMetrics]) -> None:
         padding=(0, 1),
     )
 
-    # Compact column names + widths — designed to look great at 100-120 chars
-    table.add_column("HLTH",     justify="center", width=7,  no_wrap=True)
-    table.add_column("FILE",     justify="left",   ratio=2,  no_wrap=True)
-    table.add_column("LINES",    justify="right",  width=6,  no_wrap=True)
-    table.add_column("TOUCHED",  justify="right",  width=10, no_wrap=True)
-    table.add_column("CHURN",    justify="right",  width=5,  no_wrap=True)
-    table.add_column("RECENT",   justify="right",  width=6,  no_wrap=True)
-    table.add_column("AUTH",     justify="right",  width=4,  no_wrap=True)
-    table.add_column("CPLX",     justify="right",  width=5,  no_wrap=True)
-    table.add_column("DIAGNOSIS",justify="left",   ratio=1,  no_wrap=True)
+    table.add_column("HLTH",    justify="center", width=7,  no_wrap=True)
+    table.add_column("FILE",    justify="left",   ratio=2,  no_wrap=True)
+    table.add_column("LINES",   justify="right",  width=6,  no_wrap=True)
+    table.add_column("TOUCHED", justify="right",  width=10, no_wrap=True)
+    table.add_column("CHURN",   justify="right",  width=5,  no_wrap=True)
+    table.add_column("RECENT",  justify="right",  width=7,  no_wrap=True)  # +1 for arrow
+    table.add_column("AUTH",    justify="right",  width=4,  no_wrap=True)
+    table.add_column("CPLX",    justify="right",  width=5,  no_wrap=True)
+    table.add_column("DIAGNOSIS", justify="left", ratio=1,  no_wrap=True)
+
+    _trend_arrow = {"up": ("▲", C_SKULL), "down": ("▼", C_DIM_GREEN), "stable": ("━", C_DIM)}
 
     for m in results:
         style = _row_style(m.status)
 
         # HEALTH cell
-        icon = _health_icon(m.status)
+        icon     = _health_icon(m.status)
         health_t = Text(justify="center")
         health_t.append(f"{icon} ", style=style)
         health_t.append(str(m.composite_score), style=Style(bold=True, color=_score_color(m.composite_score)))
 
-        # FILE cell — ratio column handles width; we just cap extreme paths
+        # FILE cell
         display_path = _truncate(m.path, 60)
         file_t = Text(escape(display_path), style=style, no_wrap=True)
 
@@ -325,14 +326,17 @@ def render_table(results: list[FileMetrics]) -> None:
         )
         churn_t = Text(str(m.commit_count), style=churn_color, justify="right")
 
-        # RECENT CHURN cell (commits in last 90 days)
+        # RECENT CHURN cell with trend arrow ▲▼━
         recent_color = (
             C_SKULL  if m.recent_churn > 30 else
             C_ORANGE if m.recent_churn > 15 else
             C_AMBER  if m.recent_churn > 5  else
             C_GREEN
         )
-        recent_t = Text(str(m.recent_churn), style=recent_color, justify="right")
+        arrow, arrow_color = _trend_arrow.get(m.churn_trend, ("━", C_DIM))
+        recent_t = Text(justify="right")
+        recent_t.append(str(m.recent_churn), style=recent_color)
+        recent_t.append(f" {arrow}", style=arrow_color)
 
         # AUTHORS cell
         auth_color = (
@@ -345,7 +349,7 @@ def render_table(results: list[FileMetrics]) -> None:
 
         # COMPLEXITY cell
         if m.avg_complexity is not None:
-            cx_val = f"{m.avg_complexity:.1f}"
+            cx_val   = f"{m.avg_complexity:.1f}"
             cx_color = (
                 C_SKULL  if m.avg_complexity > 15 else
                 C_ORANGE if m.avg_complexity > 10 else
@@ -353,15 +357,15 @@ def render_table(results: list[FileMetrics]) -> None:
                 C_GREEN
             )
         else:
-            cx_val = "N/A"
+            cx_val   = "N/A"
             cx_color = C_DIM
         cx_t = Text(cx_val, style=cx_color, justify="right")
 
         # DIAGNOSIS cell
         diag_color = (
-            C_SKULL  if m.status == "CRITICAL" else
-            C_ORANGE if m.status == "WARNING"  else
-            C_AMBER  if m.status == "FAIR"     else
+            C_SKULL     if m.status == "CRITICAL" else
+            C_ORANGE    if m.status == "WARNING"  else
+            C_AMBER     if m.status == "FAIR"     else
             C_DIM_GREEN
         )
         diag_t = Text(m.diagnosis, style=f"italic {diag_color}")
@@ -376,13 +380,14 @@ def render_table(results: list[FileMetrics]) -> None:
 
 
 def render_footer(results: list[FileMetrics], repo_root: Path) -> None:
-    """Render the Most Wanted, Quick Wins, and Tips panels."""
+    """Render the Most Wanted, Quick Wins, Tips, and Security Alerts panels."""
     if not results:
         return
 
     _render_most_wanted(results[0])
     _render_quick_wins(results)
     _render_tips(results)
+    _render_security_alerts(results)
 
 
 # ── Footer helpers ─────────────────────────────────────────────────────────────
@@ -404,7 +409,6 @@ def _render_most_wanted(worst: FileMetrics) -> None:
         val_t    = Text(val, style=f"bold {_score_color(score)}")
         score_table.add_row(metric_t, bar_t, dot_t, label_t, val_t)
 
-    # Complexity display
     cx_display = (
         f"{worst.avg_complexity:.1f}"
         if worst.avg_complexity is not None
@@ -416,13 +420,23 @@ def _render_most_wanted(worst: FileMetrics) -> None:
         else "✗  none found"
     )
 
-    _row("size",         worst.size_score,         "Lines",        f"{worst.lines:,}")
-    _row("age",          worst.age_score,           "Last commit",  _human_days(worst.days_since_commit))
-    _row("churn",        worst.churn_score,         "Commits",      str(worst.commit_count))
-    _row("recent",       worst.recent_churn_score,  "Last 90 days", str(worst.recent_churn))
-    _row("complexity",   worst.complexity_score,    "Complexity",   cx_display)
-    _row("authors",      worst.author_score,        "Authors",      str(worst.author_count))
-    _row("tests",        worst.test_score,          "Test file",    test_display)
+    _row("size",      worst.size_score,         "Lines",        f"{worst.lines:,}")
+    _row("age",       worst.age_score,           "Last commit",  _human_days(worst.days_since_commit))
+    _row("churn",     worst.churn_score,         "Commits",      str(worst.commit_count))
+    _row("recent",    worst.recent_churn_score,  "Last 90 days", str(worst.recent_churn))
+    _row("complexity",worst.complexity_score,    "Complexity",   cx_display)
+    _row("authors",   worst.author_score,        "Authors",      str(worst.author_count))
+    _row("tests",     worst.test_score,          "Test file",    test_display)
+
+    # Dead code row (only meaningful for Python files)
+    is_python = worst.path.endswith(".py")
+    if is_python:
+        dead_display = (
+            f"{worst.dead_code_count} unused symbol(s)"
+            if worst.dead_code_count > 0
+            else "none detected"
+        )
+        _row("dead code", worst.dead_code_score, "Vulture", dead_display)
 
     header = Text(justify="left")
     header.append(f"  {escape(worst.path)}\n", style=f"bold {C_WHITE}")
@@ -432,7 +446,6 @@ def _render_most_wanted(worst: FileMetrics) -> None:
         style=f"bold {_score_color(worst.composite_score)}",
     )
 
-    # Wrap header + score_table inside a borderless outer table for layout
     outer = Table.grid(expand=True, padding=(0, 0))
     outer.add_column()
     outer.add_row(header)
@@ -452,7 +465,6 @@ def _render_most_wanted(worst: FileMetrics) -> None:
 
 def _render_quick_wins(results: list[FileMetrics]) -> None:
     """Show files that are almost healthy — small fixes, big gains."""
-    # Candidates: WARNING or FAIR files where at least one score < 65
     wins = [
         m for m in results
         if m.status in ("WARNING", "FAIR") and m.composite_score >= 41
@@ -464,31 +476,36 @@ def _render_quick_wins(results: list[FileMetrics]) -> None:
 
     content = Text()
     for m in wins:
-        # Find the lowest individual score to suggest a fix
-        individual = {
-            "size":         m.size_score,
-            "age":          m.age_score,
-            "churn":        m.churn_score,
-            "recent_churn": m.recent_churn_score,
-            "complexity":   m.complexity_score,
-            "authors":      m.author_score,
-            "test":         m.test_score,
-        }
-        worst_metric = min(individual, key=individual.get)  # type: ignore[arg-type]
-        suggestions = {
-            "size":         "split into smaller modules",
-            "age":          "review and update the code",
-            "churn":        "stabilise the interface",
-            "recent_churn": "investigate recent surge in activity",
-            "complexity":   "reduce cyclomatic complexity",
-            "authors":      "assign a clear owner",
-            "test":         "add a test file",
-        }
-        suggestion = suggestions.get(worst_metric, "review it")
-        delta = 100 - m.composite_score
+        # If security smell, surface that first
+        if m.has_security_smell:
+            smells_short = ", ".join(m.security_smells[:2])
+            suggestion = f"fix security smell ({smells_short})"
+        else:
+            individual = {
+                "size":         m.size_score,
+                "age":          m.age_score,
+                "churn":        m.churn_score,
+                "recent_churn": m.recent_churn_score,
+                "complexity":   m.complexity_score,
+                "authors":      m.author_score,
+                "test":         m.test_score,
+                "dead_code":    m.dead_code_score,
+            }
+            worst_metric = min(individual, key=individual.get)  # type: ignore[arg-type]
+            suggestions = {
+                "size":         "split into smaller modules",
+                "age":          "review and update the code",
+                "churn":        "stabilise the interface",
+                "recent_churn": "investigate recent surge in activity",
+                "complexity":   "reduce cyclomatic complexity",
+                "authors":      "assign a clear owner",
+                "test":         "add a test file",
+                "dead_code":    "remove dead code (vulture detected unused symbols)",
+            }
+            suggestion = suggestions.get(worst_metric, "review it")
 
         file_t = Text()
-        file_t.append(f"  ●  ", style=f"bold {C_AMBER}")
+        file_t.append("  ●  ", style=f"bold {C_AMBER}")
         file_t.append(f"{_truncate(m.path, 38):<40}", style=C_WHITE)
         file_t.append(f"score: {m.composite_score:2d}  ", style=f"dim {C_GREY}")
         file_t.append(f"→ {suggestion}", style=f"italic {C_AMBER}")
@@ -508,69 +525,87 @@ def _render_quick_wins(results: list[FileMetrics]) -> None:
 
 
 def _render_tips(results: list[FileMetrics]) -> None:
-    """One actionable tip based on the repo's dominant problem."""
+    """Multiple actionable tips based on the repo's dominant problems."""
     if not results:
         return
 
-    # Tally the most common worst metric
     tally: dict[str, int] = {
         "size": 0, "age": 0, "churn": 0,
-        "recent_churn": 0, "complexity": 0, "authors": 0, "test": 0,
+        "recent_churn": 0, "complexity": 0, "authors": 0, "test": 0, "dead_code": 0,
     }
     for m in results:
         scores = {
             "size": m.size_score, "age": m.age_score, "churn": m.churn_score,
             "recent_churn": m.recent_churn_score,
-            "complexity": m.complexity_score, "authors": m.author_score, "test": m.test_score,
+            "complexity": m.complexity_score, "authors": m.author_score,
+            "test": m.test_score, "dead_code": m.dead_code_score,
         }
         worst = min(scores, key=scores.get)  # type: ignore[arg-type]
         tally[worst] = tally.get(worst, 0) + 1
 
-    dominant = max(tally, key=tally.get)  # type: ignore[arg-type]
-    count = tally[dominant]
-
     tips = {
         "recent_churn": (
-            f"🔥  {count} files have high recent activity (last 90 days). "
+            "🔥  {n} files have high recent activity (last 90 days). "
             "A sudden surge in commits signals an unstable hotspot. "
             "Consider a targeted design review before the churn compounds further."
         ),
         "size": (
-            f"📏  {count} files are too large. "
+            "📏  {n} files are too large. "
             "Apply the Single Responsibility Principle — "
             "aim for files under 300 lines by splitting concerns into separate modules."
         ),
         "age": (
-            f"🕰   {count} files haven't been touched in over a year. "
+            "🕰   {n} files haven't been touched in over a year. "
             "Schedule a codebase archaeology session — "
             "delete dead code, add comments, or rewrite the worst offenders."
         ),
         "churn": (
-            f"🔄  {count} files are high-churn. "
+            "🔄  {n} files are high-churn. "
             "High churn signals an unstable abstraction. "
             "Consider a design review to stabilise the interface before it entangles more code."
         ),
         "complexity": (
-            f"🧠  {count} files have critical cyclomatic complexity. "
+            "🧠  {n} files have critical cyclomatic complexity. "
             "Break large functions into smaller pure helpers. "
             "Aim for an average complexity below 5 per function."
         ),
         "authors": (
-            f"👥  {count} files have diffused ownership. "
+            "👥  {n} files have diffused ownership. "
             "Assign a primary owner for each critical file using CODEOWNERS. "
             "No owner means nobody fixes it when it breaks."
         ),
         "test": (
-            f"🧪  {count} files have no corresponding test file. "
+            "🧪  {n} files have no corresponding test file. "
             "Start with the highest-churn files — they change most and need tests most. "
             "Even one happy-path test is infinitely better than none."
         ),
+        "dead_code": (
+            "🧟  {n} files contain dead code detected by vulture. "
+            "Unused functions and classes add cognitive load and hide real bugs. "
+            "Run `vulture <file>` on each and remove anything above 80% confidence."
+        ),
     }
 
-    tip_text = tips.get(dominant, "Keep improving — every refactor counts.")
+    # Show top 3 dominant patterns
+    sorted_patterns = sorted(
+        [(k, v) for k, v in tally.items() if v > 0],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:3]
+
+    if not sorted_patterns:
+        return
+
+    content_parts: list[str] = []
+    for pattern, count in sorted_patterns:
+        tmpl = tips.get(pattern)
+        if tmpl:
+            content_parts.append(tmpl.replace("{n}", str(count)))
+
+    full_text = "\n\n".join(content_parts)
 
     panel = Panel(
-        f"[{C_WHITE}]{tip_text}[/]",
+        f"[{C_WHITE}]{full_text}[/]",
         title=f"[bold {C_AMBER}]  💡  PATTERN DETECTED  [/]",
         border_style=C_AMBER,
         box=box.ROUNDED,
@@ -580,13 +615,148 @@ def _render_tips(results: list[FileMetrics]) -> None:
     console.print()
 
 
-# ── Main entry point ───────────────────────────────────────────────────────────
+def _render_security_alerts(results: list[FileMetrics]) -> None:
+    """Show a red SECURITY ALERTS panel if any files have security smells."""
+    security_files = [m for m in results if m.has_security_smell]
+    if not security_files:
+        return
 
-def run_display(repo_path: Path, top: int, min_score: Optional[int]) -> None:
+    content = Text()
+    for m in security_files[:15]:
+        smells_str = ", ".join(m.security_smells[:3])
+        file_t = Text()
+        file_t.append("  🔐  ", style=f"bold {C_RED1}")
+        file_t.append(f"{_truncate(m.path, 38):<40}", style=C_WHITE)
+        file_t.append(f"  {smells_str}", style=f"italic {C_ORANGE}")
+        content.append_text(file_t)
+        content.append("\n")
+
+    if len(security_files) > 15:
+        extra = len(security_files) - 15
+        content.append(f"\n  … and {extra} more file(s)", style=f"dim {C_GREY}")
+
+    panel = Panel(
+        content,
+        title=f"[bold {C_RED1}]  🔐  SECURITY ALERTS  [/]",
+        subtitle=f"[dim {C_GREY}]{len(security_files)} file(s) with dangerous patterns[/]",
+        border_style=C_RED5,
+        box=box.HEAVY,
+        padding=(0, 0),
+    )
+    console.print(panel)
+    console.print()
+
+
+# ── Diff renderer ──────────────────────────────────────────────────────────────
+
+def render_diff(
+    current: list[FileMetrics],
+    historical: list[FileMetrics],
+    ref: str,
+) -> None:
+    """Show score changes between the current state and a historical ref."""
+    hist_map = {m.path: m for m in historical}
+
+    entries: list[tuple[FileMetrics, FileMetrics, int]] = []
+    for m in current:
+        if m.path in hist_map:
+            h     = hist_map[m.path]
+            delta = m.composite_score - h.composite_score
+            entries.append((m, h, delta))
+
+    # Sort: most worsened first (smallest delta first)
+    entries.sort(key=lambda x: x[2])
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        border_style=C_RED6,
+        header_style=f"bold {C_CRIMSON}",
+        show_edge=True,
+        expand=True,
+        title=f"[bold {C_CRIMSON}]HEALTH DIFF: HEAD vs {escape(ref)}[/]",
+        caption=f"[dim {C_GREY}]▼ worsened · ▲ improved · ━ unchanged[/]",
+        padding=(0, 1),
+    )
+    table.add_column("FILE",        justify="left",   ratio=2, no_wrap=True)
+    table.add_column("BEFORE",      justify="center", width=8, no_wrap=True)
+    table.add_column("NOW",         justify="center", width=8, no_wrap=True)
+    table.add_column("CHANGE",      justify="center", width=8, no_wrap=True)
+    table.add_column("STATUS",      justify="left",   width=9, no_wrap=True)
+
+    improved = worsened = unchanged = 0
+
+    for m, h, delta in entries:
+        if delta > 0:
+            arrow, arrow_color = "▲", C_GREEN
+            improved += 1
+        elif delta < 0:
+            arrow, arrow_color = "▼", C_SKULL
+            worsened += 1
+        else:
+            arrow, arrow_color = "━", C_GREY
+            unchanged += 1
+
+        file_t   = Text(_truncate(m.path, 60), style=_row_style(m.status))
+        before_t = Text(str(h.composite_score), style=_score_color(h.composite_score), justify="center")
+        now_t    = Text(str(m.composite_score), style=_score_color(m.composite_score),  justify="center")
+        change_t = Text(f"{arrow} {abs(delta):+d}" if delta != 0 else "━  0", style=arrow_color, justify="center")
+
+        # Status change label
+        if m.status != h.status:
+            status_t = Text(f"{h.status}→{m.status}", style=_row_style(m.status))
+        else:
+            status_t = Text(m.status, style=_row_style(m.status))
+
+        table.add_row(file_t, before_t, now_t, change_t, status_t)
+
+    console.print(table)
+    console.print()
+
+    # Summary line
+    summary = Text(justify="center")
+    summary.append(f"▲ {improved} improved  ", style=C_GREEN)
+    summary.append(f"▼ {worsened} worsened  ", style=C_SKULL)
+    summary.append(f"━ {unchanged} unchanged",  style=C_GREY)
+    console.print(Align(summary, align="center"))
+    console.print()
+
+
+# ── Markdown renderer ──────────────────────────────────────────────────────────
+
+def render_markdown(results: list[FileMetrics]) -> None:
+    """Output a GitHub-Flavored Markdown table to stdout."""
+    import click
+
+    headers = ["FILE", "SCORE", "STATUS", "LINES", "LAST TOUCHED", "CHURN", "AUTHORS", "DIAGNOSIS"]
+    click.echo("| " + " | ".join(headers) + " |")
+    click.echo("| " + " | ".join(["---"] * len(headers)) + " |")
+    for m in results:
+        row = [
+            f"`{m.path}`",
+            str(m.composite_score),
+            m.status,
+            str(m.lines),
+            _human_days(m.days_since_commit),
+            str(m.commit_count),
+            str(m.author_count),
+            m.diagnosis,
+        ]
+        click.echo("| " + " | ".join(row) + " |")
+
+
+# ── Main entry points ──────────────────────────────────────────────────────────
+
+def run_display(
+    repo_path: Path,
+    top: int,
+    min_score: Optional[int],
+    ci_mode: bool = False,
+) -> None:
     """Full deathbed run: header → scan → table → footer."""
     from .analyzer import analyze_repo
 
-    render_header()
+    if not ci_mode:
+        render_header()
 
     try:
         start = time.monotonic()
@@ -628,10 +798,13 @@ def run_display(repo_path: Path, top: int, min_score: Optional[int]) -> None:
             )
             return
 
+        if ci_mode:
+            _run_ci(results, total_scanned)
+            return
+
         render_summary(results, total_scanned, elapsed)
         render_table(results)
 
-        # Only show footer panels when there are problematic files
         non_healthy = [m for m in results if m.status != "HEALTHY"]
         if non_healthy:
             render_footer(non_healthy, repo_path)
@@ -660,8 +833,100 @@ def run_display(repo_path: Path, top: int, min_score: Optional[int]) -> None:
         console.print(f"\n[dim {C_GREY}]Scan interrupted.[/]")
         sys.exit(0)
     except Exception as exc:
-        render_error(
-            "Unexpected error",
-            str(exc),
+        render_error("Unexpected error", str(exc))
+        sys.exit(1)
+
+
+def _run_ci(results: list[FileMetrics], total_scanned: int) -> None:
+    """CI mode: print minimal stats, exit 1 if any CRITICAL files."""
+    critical = [m for m in results if m.status == "CRITICAL"]
+    import click
+
+    if critical:
+        click.echo(
+            f"deathbed: {len(critical)} CRITICAL file(s) found out of {total_scanned} scanned.",
+            err=True,
         )
+        for m in critical:
+            click.echo(f"  💀 {m.path}  score={m.composite_score}  [{m.diagnosis}]", err=True)
+        sys.exit(1)
+    else:
+        click.echo(
+            f"deathbed: 0 CRITICAL files. {total_scanned} files scanned — all passing CI threshold."
+        )
+
+
+def run_watch_display(
+    repo_path: Path,
+    top: int,
+    min_score: Optional[int],
+    interval: int = 30,
+) -> None:
+    """Run the full display in a loop, clearing and re-rendering every interval seconds."""
+    console.print(
+        f"[bold {C_CRIMSON}]Watch mode — refreshing every {interval}s · Ctrl+C to stop[/]"
+    )
+    try:
+        while True:
+            console.clear()
+            run_display(repo_path, top, min_score)
+            console.print(
+                f"[dim {C_GREY}]⟳ Next refresh in {interval}s · Ctrl+C to stop[/]"
+            )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print(f"\n[dim {C_GREY}]Watch mode stopped.[/]")
+        sys.exit(0)
+
+
+def run_diff_display(
+    repo_path: Path,
+    ref: str,
+    top: int,
+    min_score: Optional[int],
+) -> None:
+    """Run the diff analysis and display the comparison table."""
+    from .analyzer import analyze_diff
+
+    render_header()
+
+    try:
+        start = time.monotonic()
+        total_scanned = 0
+
+        with make_progress() as progress:
+            task = progress.add_task(
+                f"Comparing HEAD vs {ref}",
+                total=None,
+                color=C_CRIMSON,
+                current_file="",
+            )
+
+            def on_progress(rel: str, idx: int, total: int) -> None:
+                nonlocal total_scanned
+                total_scanned = total
+                progress.update(
+                    task, total=total, completed=idx,
+                    current_file=_truncate(rel, 60) if rel else "",
+                )
+
+            current, historical = analyze_diff(
+                repo_path, ref,
+                top=top, min_score=min_score,
+                on_progress=on_progress,
+            )
+
+        elapsed = time.monotonic() - start
+
+        if total_scanned == 0:
+            render_error("No files found", "No analysable source files found.")
+            return
+
+        render_diff(current, historical, ref)
+
+    except git.InvalidGitRepositoryError:
+        render_error("Not a git repository", str(repo_path))
+        sys.exit(1)
+    except Exception as exc:
+        render_error("Diff failed", str(exc))
         sys.exit(1)

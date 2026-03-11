@@ -32,7 +32,7 @@ from .display import console, render_error
     "--format", "-f", "output_format",
     default="rich",
     show_default=True,
-    type=click.Choice(["rich", "json"], case_sensitive=False),
+    type=click.Choice(["rich", "json", "markdown"], case_sensitive=False),
     help="Output format.",
 )
 @click.option(
@@ -41,37 +41,94 @@ from .display import console, render_error
     type=click.IntRange(0, 100),
     help="Only show files with a health score strictly below this value.",
 )
+@click.option(
+    "--watch", "-w",
+    is_flag=True,
+    default=False,
+    help="Live auto-refreshing dashboard — re-runs every 30 seconds.",
+)
+@click.option(
+    "--diff",
+    default=None,
+    metavar="REF",
+    help="Compare health scores between HEAD and REF (e.g. HEAD~1, main).",
+)
+@click.option(
+    "--export",
+    "export_format",
+    default=None,
+    type=click.Choice(["html"], case_sensitive=False),
+    help="Export a self-contained report file (html).",
+)
+@click.option(
+    "--ci",
+    is_flag=True,
+    default=False,
+    help="Exit code 1 if any CRITICAL files are found (for CI pipelines).",
+)
 @click.version_option(__version__, "--version", "-V", prog_name="deathbed")
 def main(
     path: str,
     top: int,
     output_format: str,
     min_score: Optional[int],
+    watch: bool,
+    diff: Optional[str],
+    export_format: Optional[str],
+    ci: bool,
 ) -> None:
     """
     \b
     deathbed — every codebase has files that are dying. find them.
 
     Analyses a git repository and scores every tracked source file for
-    health based on age, complexity, churn, size, authorship, and test
-    coverage.  Worst files appear first.
+    health based on age, complexity, churn, size, authorship, test
+    coverage, dead code, security patterns, and clone risk.
 
     \b
     Examples:
-      deathbed                       # analyse current directory
-      deathbed --path /my/repo       # analyse another repo
-      deathbed --top 20              # show only the 20 worst files
-      deathbed --min-score 65        # show only WARNING / CRITICAL files
-      deathbed --format json         # JSON output for CI pipelines
+      deathbed                          # analyse current directory
+      deathbed --path /my/repo          # analyse another repo
+      deathbed --top 20                 # show only the 20 worst files
+      deathbed --min-score 65           # show only WARNING / CRITICAL files
+      deathbed --format json            # JSON output for scripting
+      deathbed --format markdown        # Markdown table output
+      deathbed --watch                  # live auto-refreshing dashboard
+      deathbed --diff HEAD~1            # compare health vs last commit
+      deathbed --export html            # export HTML report
+      deathbed --ci                     # exit 1 if any CRITICAL files (CI use)
     """
     repo_path = Path(path).resolve()
 
+    # ── Mutually exclusive mode dispatch ──────────────────────────────────────
+    if diff is not None:
+        from .display import run_diff_display
+        run_diff_display(repo_path, diff, top, min_score)
+        return
+
+    if export_format == "html":
+        _run_html_export(repo_path, top, min_score)
+        return
+
+    if watch:
+        from .display import run_watch_display
+        run_watch_display(repo_path, top, min_score)
+        return
+
     if output_format == "json":
         _run_json(repo_path, top, min_score)
-    else:
-        from .display import run_display
-        run_display(repo_path, top, min_score)
+        return
 
+    if output_format == "markdown":
+        _run_markdown(repo_path, top, min_score)
+        return
+
+    # Default: rich terminal display (ci flag modifies exit behaviour)
+    from .display import run_display
+    run_display(repo_path, top, min_score, ci_mode=ci)
+
+
+# ── Sub-runners ───────────────────────────────────────────────────────────────
 
 def _run_json(repo_path: Path, top: int, min_score: Optional[int]) -> None:
     """Emit JSON output for CI / scripting use."""
@@ -95,6 +152,11 @@ def _run_json(repo_path: Path, top: int, min_score: Optional[int]) -> None:
                     "author_count":      m.author_count,
                     "avg_complexity":    m.avg_complexity,
                     "has_test_file":     m.has_test_file,
+                    "dead_code_count":   m.dead_code_count,
+                    "has_security_smell": m.has_security_smell,
+                    "security_smells":   m.security_smells,
+                    "clone_similarity":  round(m.clone_similarity, 3),
+                    "clone_of":          m.clone_of,
                     "scores": {
                         "size":       m.size_score,
                         "age":        m.age_score,
@@ -102,6 +164,8 @@ def _run_json(repo_path: Path, top: int, min_score: Optional[int]) -> None:
                         "complexity": m.complexity_score,
                         "authors":    m.author_score,
                         "test":       m.test_score,
+                        "recent_churn": m.recent_churn_score,
+                        "dead_code":  m.dead_code_score,
                     },
                 }
                 for m in results
@@ -110,4 +174,75 @@ def _run_json(repo_path: Path, top: int, min_score: Optional[int]) -> None:
         click.echo(json.dumps(payload, indent=2))
     except Exception as exc:
         render_error("JSON output failed", str(exc))
+        sys.exit(1)
+
+
+def _run_markdown(repo_path: Path, top: int, min_score: Optional[int]) -> None:
+    """Emit a Markdown table to stdout."""
+    try:
+        from .analyzer import analyze_repo
+        from .display import render_markdown
+
+        results = analyze_repo(repo_path, top=top, min_score=min_score, quiet=True)
+        render_markdown(results)
+    except Exception as exc:
+        render_error("Markdown output failed", str(exc))
+        sys.exit(1)
+
+
+def _run_html_export(repo_path: Path, top: int, min_score: Optional[int]) -> None:
+    """Analyse repo and write a self-contained HTML report to disk."""
+    import time
+
+    from .analyzer import analyze_repo
+    from .display import console, make_progress, render_error, render_header, _truncate
+    from .export import generate_html_report
+
+    render_header()
+
+    try:
+        start = time.monotonic()
+        total_scanned = 0
+
+        with make_progress() as progress:
+            task = progress.add_task(
+                "Scanning for HTML export",
+                total=None,
+                color="rgb(220,20,60)",
+                current_file="",
+            )
+
+            def on_progress(rel: str, idx: int, total: int) -> None:
+                nonlocal total_scanned
+                total_scanned = total
+                progress.update(
+                    task, total=total, completed=idx,
+                    current_file=_truncate(rel, 60) if rel else "",
+                )
+
+            results = analyze_repo(
+                repo_path, top=top, min_score=min_score,
+                on_progress=on_progress,
+            )
+
+        elapsed = time.monotonic() - start
+
+        if total_scanned == 0:
+            render_error("No files found", "No analysable source files found.")
+            return
+
+        html = generate_html_report(results, repo_path, elapsed, total_scanned)
+        out_path = Path("deathbed-report.html")
+        out_path.write_text(html, encoding="utf-8")
+
+        from rich.panel import Panel
+        from .display import C_GREEN, C_DIM_GREEN
+        console.print(
+            Panel(
+                f"[bold {C_GREEN}]  ✅  Report saved to {out_path.resolve()}[/]",
+                border_style=C_DIM_GREEN,
+            )
+        )
+    except Exception as exc:
+        render_error("HTML export failed", str(exc))
         sys.exit(1)

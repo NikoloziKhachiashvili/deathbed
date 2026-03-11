@@ -1,10 +1,10 @@
   ```
-                        ██████╗ ███████╗ █████╗ ████████╗██╗  ██╗██████╗ ███████╗██████╗
-                        ██╔══██╗██╔════╝██╔══██╗╚══██╔══╝██║  ██║██╔══██╗██╔════╝██╔══██╗
-                        ██║  ██║█████╗  ███████║   ██║   ███████║██████╔╝█████╗  ██║  ██║
-                        ██║  ██║██╔══╝  ██╔══██║   ██║   ██╔══██║██╔══██╗██╔══╝  ██║  ██║
-                        ██████╔╝███████╗██║  ██║   ██║   ██║  ██║██████╔╝███████╗██████╔╝
-                        ╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═════╝
+                       ██████╗ ███████╗ █████╗ ████████╗██╗  ██╗██████╗ ███████╗██████╗
+                       ██╔══██╗██╔════╝██╔══██╗╚══██╔══╝██║  ██║██╔══██╗██╔════╝██╔══██╗
+                       ██║  ██║█████╗  ███████║   ██║   ███████║██████╔╝█████╗  ██║  ██║
+                       ██║  ██║██╔══╝  ██╔══██║   ██║   ██╔══██║██╔══██╗██╔══╝  ██║  ██║
+                       ██████╔╝███████╗██║  ██║   ██║   ██║  ██║██████╔╝███████╗██████╔╝
+                       ╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═════╝
 ```
 
 <p align="center">
@@ -20,13 +20,13 @@
 
 ---
 
-**deathbed** analyses every tracked source file in a git repository and gives it a **health score** based on six real, local metrics — no external API calls, no secrets needed.  It then surfaces the files most likely to cause you pain, explains *why* they are dying, and tells you exactly what to do first.
+**deathbed** analyses every tracked source file in a git repository and gives it a **health score** based on eight real, local metrics — no external API calls, no secrets needed.  It then surfaces the files most likely to cause you pain, explains *why* they are dying, and tells you exactly what to do first.
 
 ---
 
 ## Why?
 
-Every codebase accumulates rot.  Files that nobody owns.  Files too complex to understand.  Files last touched three years ago by someone who left.  These files never show up in sprint planning, but they quietly cause the most bugs, the slowest onboarding, and the worst incidents.
+Every codebase accumulates rot.  Files that nobody owns.  Files too complex to understand.  Files last touched three years ago by someone who left.  Files importing `pickle` in a web handler.  These files never show up in sprint planning, but they quietly cause the most bugs, the slowest onboarding, and the worst incidents.
 
 deathbed makes the invisible visible.
 
@@ -43,7 +43,7 @@ Or, to hack on it:
 ```bash
 git clone https://github.com/NikoloziKhachiashvili/deathbed
 cd deathbed
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 ---
@@ -66,8 +66,27 @@ deathbed --min-score 65
 # Output JSON for CI pipelines / scripting
 deathbed --format json
 
+# Output a Markdown table (for GitHub comments etc.)
+deathbed --format markdown
+
+# Live auto-refreshing dashboard (re-runs every 30s)
+deathbed --watch
+
+# Compare health scores between HEAD and HEAD~1
+deathbed --diff HEAD~1
+
+# Compare HEAD against any ref
+deathbed --diff main
+
+# Export a self-contained HTML report
+deathbed --export html
+
+# CI mode — exit 1 if any CRITICAL files are found
+deathbed --ci
+
 # Combine flags
 deathbed --path ~/projects/myapp --top 10 --format json
+deathbed --min-score 70 --ci
 ```
 
 ### Options
@@ -77,7 +96,11 @@ deathbed --path ~/projects/myapp --top 10 --format json
 | `--path`, `-p` | `.` | Path to the git repository |
 | `--top`, `-t` | `50` | Show only the N worst files (0 = all) |
 | `--min-score` | — | Only show files with a health score below this value |
-| `--format`, `-f` | `rich` | Output format: `rich` or `json` |
+| `--format`, `-f` | `rich` | Output format: `rich`, `json`, or `markdown` |
+| `--watch`, `-w` | — | Live auto-refreshing dashboard (30s interval) |
+| `--diff REF` | — | Compare health scores between HEAD and REF |
+| `--export html` | — | Export a self-contained HTML report to `deathbed-report.html` |
+| `--ci` | — | Exit code 1 if any CRITICAL files found (for CI pipelines) |
 | `--version`, `-V` | — | Show version and exit |
 
 ---
@@ -92,16 +115,18 @@ When you run `deathbed` you get:
 
 ## Metrics explained
 
-Each file receives a **composite health score from 0–100** (higher is healthier), built from six weighted sub-scores:
+Each file receives a **composite health score from 0–100** (higher is healthier), built from eight weighted sub-scores:
 
 | # | Metric | Weight | What it measures |
 |---|--------|--------|-----------------|
-| 1 | **Size** | 15% | Lines of code — penalises files > 300 / 600 / 1000 lines |
-| 2 | **Age** | 20% | Days since any commit touched this file — flags abandoned code |
-| 3 | **Churn** | 20% | Number of commits to this file — instability signal |
-| 4 | **Complexity** | 20% | Radon cyclomatic complexity average — Python files only; N/A otherwise |
-| 5 | **Authors** | 15% | Unique git authors — many authors = diffused ownership |
-| 6 | **Test coverage** | 10% | Whether a corresponding test file exists anywhere in the repo |
+| 1 | **Size** | 13% | Lines of code — penalises files > 300 / 600 / 1000 lines |
+| 2 | **Age** | 13% | Days since any commit touched this file — flags abandoned code |
+| 3 | **Churn** | 9% | Total number of commits — instability signal |
+| 4 | **Complexity** | 18% | Radon cyclomatic complexity average — Python only; N/A otherwise |
+| 5 | **Authors** | 12% | Unique git authors — many authors = diffused ownership |
+| 6 | **Test coverage** | 9% | Whether a corresponding test file exists anywhere in the repo |
+| 7 | **Recent churn** | 16% | Commits in the last 90 days — hotspot detection |
+| 8 | **Dead code** | 10% | Unused functions/classes/variables detected by vulture (Python only) |
 
 ### Health thresholds
 
@@ -114,10 +139,14 @@ Each file receives a **composite health score from 0–100** (higher is healthie
 
 ### Diagnoses
 
-deathbed automatically picks the most meaningful single-phrase diagnosis:
+deathbed automatically picks the most meaningful diagnosis:
 
 | Diagnosis | What it means |
 |-----------|--------------|
+| `security smell` | File imports dangerous patterns (pickle, eval, exec, os.system, subprocess shell=True) |
+| `clone risk` | File is >40% similar to another file — likely a copy-paste |
+| `dead code cemetery` | High vulture score — lots of unused symbols |
+| `ownership void` | Abandoned for 6+ months and only ever touched by 1 author |
 | `complexity graveyard` | Cyclomatic complexity is extremely high |
 | `legacy ghost` | Not touched in years — likely orphaned |
 | `too many cooks` | Many authors, nobody owns it |
@@ -127,15 +156,85 @@ deathbed automatically picks the most meaningful single-phrase diagnosis:
 | `abandoned and complex` | Old *and* hard to understand |
 | `healthy` | Nothing to worry about |
 
+Any diagnosis can gain the ` 🔥 heating up` suffix when recent commit activity has spiked 2× over the prior 90-day window.
+
+---
+
+## Trend arrows in the table
+
+The **RECENT** column now shows trend arrows alongside the 90-day commit count:
+
+| Arrow | Meaning |
+|-------|---------|
+| ▲ | Recent churn is 1.5× higher than the prior 90 days — hotspot forming |
+| ▼ | Activity has dropped significantly — cooling down |
+| ━ | Stable activity or insufficient data |
+
+---
+
+## SECURITY ALERTS panel
+
+If any files contain dangerous import or call patterns, a dedicated red **SECURITY ALERTS** panel appears below the main report, listing every affected file and the specific patterns detected.
+
+---
+
+## Live watch mode
+
+```bash
+deathbed --watch
+```
+
+Re-scans the repository every 30 seconds, clears the screen, and reprints the full report.  Press **Ctrl+C** to stop.
+
+---
+
+## Diff mode
+
+```bash
+deathbed --diff HEAD~1
+deathbed --diff main
+```
+
+Compares health scores between the current state (HEAD) and any historical git ref.  Shows ▲ improved / ▼ worsened / ━ unchanged with exact deltas.
+
+---
+
+## HTML export
+
+```bash
+deathbed --export html
+```
+
+Writes a fully self-contained **`deathbed-report.html`** to the current directory.  The report mirrors the terminal UI with:
+- Dark red/green colour scheme
+- Sortable table (click any column header)
+- Score gauges per file
+- Most Wanted breakdown
+- Quick Wins list
+- Security Alerts (if any)
+
+No external dependencies — one file, works offline.
+
+---
+
+## CI integration
+
+```bash
+# In .github/workflows/ci.yml or similar:
+deathbed --ci --min-score 50
+```
+
+Exits with **code 1** if any files are CRITICAL (score ≤ 40), printing a list of offending files to stderr.  Exits 0 otherwise.
+
 ---
 
 ## JSON output
 
-`--format json` returns a machine-readable object useful for CI gates:
+`--format json` returns a machine-readable object with all new v1.2.0 fields:
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.2.0",
   "repo": "/path/to/repo",
   "total": 3,
   "files": [
@@ -143,21 +242,37 @@ deathbed automatically picks the most meaningful single-phrase diagnosis:
       "file": "src/legacy/monster.py",
       "health_score": 22,
       "status": "CRITICAL",
-      "diagnosis": "complexity graveyard",
+      "diagnosis": "security smell",
       "lines": 1284,
       "days_since_commit": 847,
       "commit_count": 134,
       "author_count": 9,
       "avg_complexity": 18.3,
       "has_test_file": false,
+      "dead_code_count": 12,
+      "has_security_smell": true,
+      "security_smells": ["imports pickle", "calls eval()"],
+      "clone_similarity": 0.0,
+      "clone_of": "",
       "scores": {
         "size": 0, "age": 5, "churn": 15,
-        "complexity": 2, "authors": 20, "test": 20
+        "complexity": 2, "authors": 20, "test": 20,
+        "recent_churn": 40, "dead_code": 20
       }
     }
   ]
 }
 ```
+
+---
+
+## Markdown output
+
+```bash
+deathbed --format markdown
+```
+
+Emits a GitHub-Flavored Markdown table suitable for pasting into PR comments or issue trackers.
 
 ---
 
@@ -173,10 +288,17 @@ Automatically skipped: `node_modules`, `venv`, `dist`, `build`, `.git`, binary f
 
 1. Fork the repo
 2. Create a branch: `git checkout -b feat/my-idea`
-3. Make your changes (run `deathbed` against itself to test!)
-4. Open a pull request
+3. Make your changes and run tests: `pytest`
+4. Run deathbed against itself: `deathbed`
+5. Open a pull request
 
-Bug reports and feature ideas welcome via [Issues](https://github.com/yourusername/deathbed/issues).
+Bug reports and feature ideas welcome via [Issues](https://github.com/NikoloziKhachiashvili/deathbed/issues).
+
+---
+
+## License
+
+MIT License — Copyright (c) 2024 Nikolozi Khachiashvili
 
 ---
 

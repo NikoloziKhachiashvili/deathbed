@@ -19,6 +19,13 @@ class FileMetrics:
     recent_churn: int = 0   # commits in last 90 days
     prev_churn: int = 0     # commits in prior 90 days (days 91-180)
 
+    # New v1.2.0 fields
+    dead_code_count: int = 0          # unused symbols found by vulture
+    has_security_smell: bool = False   # dangerous import patterns found
+    security_smells: list = field(default_factory=list)  # list of smell descriptions
+    clone_similarity: float = 0.0     # highest similarity ratio to any other file
+    clone_of: str = ""                # path of the most similar file
+
     # Individual scores (0–100, higher = healthier)
     size_score: int = 100
     age_score: int = 100
@@ -27,9 +34,11 @@ class FileMetrics:
     author_score: int = 100
     test_score: int = 100
     recent_churn_score: int = 100
+    dead_code_score: int = 100
 
-    # Derived flag
+    # Derived flags
     heating_up: bool = False
+    churn_trend: str = "stable"   # "up", "down", or "stable"
 
     # Composite
     composite_score: int = 100
@@ -40,13 +49,14 @@ class FileMetrics:
 # ── Weights ───────────────────────────────────────────────────────────────────
 
 WEIGHTS: dict[str, float] = {
-    "size": 0.15,
-    "age": 0.15,          # reduced from 0.20; recent_churn captures recent signal better
-    "churn": 0.10,        # reduced from 0.20; recent_churn subsumes part of this signal
-    "complexity": 0.20,
-    "authors": 0.15,
-    "test": 0.10,
-    "recent_churn": 0.15,
+    "size":         0.13,
+    "age":          0.13,
+    "churn":        0.09,
+    "complexity":   0.18,
+    "authors":      0.12,
+    "test":         0.09,
+    "recent_churn": 0.16,
+    "dead_code":    0.10,
 }
 # weights sum = 1.00
 
@@ -136,22 +146,56 @@ def _test_score(has_test: bool, test_recent: bool) -> int:
     return 70
 
 
+def _dead_code_score(count: int, is_python: bool) -> int:
+    """Score based on number of high-confidence unused code items from vulture."""
+    if not is_python:
+        return 75   # neutral for non-Python files
+    if count == 0:
+        return 100
+    if count <= 3:
+        return 85
+    if count <= 8:
+        return 60
+    if count <= 15:
+        return 35
+    return max(0, 20 - (count - 15) // 2)
+
+
 # ── Diagnosis ─────────────────────────────────────────────────────────────────
 
 def _diagnose(m: FileMetrics) -> str:
     scores = {
-        "size": m.size_score,
-        "age": m.age_score,
-        "churn": m.churn_score,
+        "size":       m.size_score,
+        "age":        m.age_score,
+        "churn":      m.churn_score,
         "complexity": m.complexity_score,
-        "authors": m.author_score,
-        "test": m.test_score,
+        "authors":    m.author_score,
+        "test":       m.test_score,
     }
     worst = min(scores, key=scores.get)  # type: ignore[arg-type]
+    suffix = " 🔥 heating up" if m.heating_up else ""
+
+    # Security smell is always surfaced (safety concern, highest priority)
+    if m.has_security_smell:
+        return "security smell" + suffix
+
+    # Clone risk
+    if m.clone_similarity >= 0.4:
+        return "clone risk" + suffix
+
+    # Dead code cemetery
+    if m.dead_code_score < 40:
+        return "dead code cemetery" + suffix
+
+    # Ownership void: abandoned by a single author
+    if m.days_since_commit >= 180 and m.author_count <= 1 and m.commit_count > 0:
+        if m.age_score < 45:
+            return "ownership void" + suffix
 
     if m.composite_score >= 86:
-        base = "healthy"
-    elif scores["age"] < 35 and scores["complexity"] < 45:
+        return "healthy"
+
+    if scores["age"] < 35 and scores["complexity"] < 45:
         base = "abandoned and complex"
     elif scores["age"] < 35 and scores["test"] < 35:
         base = "nobody's watching this"
@@ -167,18 +211,16 @@ def _diagnose(m: FileMetrics) -> str:
         base = "legacy ghost"
     else:
         mapping = {
-            "churn": "churn monster",
+            "churn":      "churn monster",
             "complexity": "complexity graveyard",
-            "age": "legacy ghost",
-            "authors": "too many cooks",
-            "size": "growing out of control",
-            "test": "nobody's watching this",
+            "age":        "legacy ghost",
+            "authors":    "too many cooks",
+            "size":       "growing out of control",
+            "test":       "nobody's watching this",
         }
         base = mapping.get(worst, "needs attention")
 
-    if m.heating_up:
-        return base + " 🔥 heating up"
-    return base
+    return base + suffix
 
 
 def _status(score: int) -> str:
@@ -195,13 +237,16 @@ def _status(score: int) -> str:
 
 def compute_scores(m: FileMetrics) -> FileMetrics:
     """Fill in all score fields and composite, in-place."""
-    m.size_score = _size_score(m.lines)
-    m.age_score = _age_score(m.days_since_commit)
-    m.churn_score = _churn_score(m.commit_count)
+    is_python = m.path.endswith(".py")
+
+    m.size_score       = _size_score(m.lines)
+    m.age_score        = _age_score(m.days_since_commit)
+    m.churn_score      = _churn_score(m.commit_count)
     m.complexity_score = _complexity_score(m.avg_complexity)
-    m.author_score = _author_score(m.author_count)
-    m.test_score = _test_score(m.has_test_file, m.test_file_recent)
+    m.author_score     = _author_score(m.author_count)
+    m.test_score       = _test_score(m.has_test_file, m.test_file_recent)
     m.recent_churn_score = _recent_churn_score(m.recent_churn)
+    m.dead_code_score  = _dead_code_score(m.dead_code_count, is_python)
 
     # Heating up: recent activity is 2× or more than the prior 90-day window
     m.heating_up = (
@@ -210,16 +255,32 @@ def compute_scores(m: FileMetrics) -> FileMetrics:
         and m.recent_churn >= m.prev_churn * 2
     )
 
+    # Churn trend
+    if m.recent_churn > 3 and m.prev_churn > 0:
+        if m.recent_churn >= m.prev_churn * 1.5:
+            m.churn_trend = "up"
+        elif m.prev_churn >= m.recent_churn * 1.5:
+            m.churn_trend = "down"
+        else:
+            m.churn_trend = "stable"
+    elif m.recent_churn > 3 and m.prev_churn == 0:
+        m.churn_trend = "up"
+    elif m.recent_churn == 0 and m.prev_churn > 3:
+        m.churn_trend = "down"
+    else:
+        m.churn_trend = "stable"
+
     m.composite_score = int(
-        m.size_score * WEIGHTS["size"]
-        + m.age_score * WEIGHTS["age"]
-        + m.churn_score * WEIGHTS["churn"]
+        m.size_score         * WEIGHTS["size"]
+        + m.age_score        * WEIGHTS["age"]
+        + m.churn_score      * WEIGHTS["churn"]
         + m.complexity_score * WEIGHTS["complexity"]
-        + m.author_score * WEIGHTS["authors"]
-        + m.test_score * WEIGHTS["test"]
+        + m.author_score     * WEIGHTS["authors"]
+        + m.test_score       * WEIGHTS["test"]
         + m.recent_churn_score * WEIGHTS["recent_churn"]
+        + m.dead_code_score  * WEIGHTS["dead_code"]
     )
 
-    m.status = _status(m.composite_score)
+    m.status    = _status(m.composite_score)
     m.diagnosis = _diagnose(m)
     return m

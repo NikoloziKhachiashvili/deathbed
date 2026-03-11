@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deathbed"
-version = "1.1.0"
+version = "1.2.0"
 description = "Find the files in your codebase that are dying before they kill you."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
-authors = [{ name = "deathbed contributors" }]
+authors = [{ name = "Nikolozi Khachiashvili" }]
 keywords = ["git", "code-quality", "analysis", "cli", "developer-tools", "technical-debt"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -30,6 +30,13 @@ dependencies = [
     "gitpython>=3.1",
     "radon>=6.0",
     "pathspec>=0.11",
+    "vulture>=2.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
 ]
 
 [project.scripts]
@@ -39,3 +46,11 @@ deathbed = "deathbed.cli:main"
 Homepage = "https://github.com/NikoloziKhachiashvili/deathbed"
 Repository = "https://github.com/NikoloziKhachiashvili/deathbed"
 Issues = "https://github.com/NikoloziKhachiashvili/deathbed/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=deathbed --cov-report=term-missing -q"
+
+[tool.coverage.run]
+source = ["deathbed"]
+omit = ["tests/*"]
