@@ -383,7 +383,7 @@ Bug reports and feature ideas welcome via [Issues](https://github.com/NikoloziKh
 
 ## License
 
-MIT License — Copyright (c) 2024 Nikolozi Khachiashvili
+MIT License — Copyright (c) 2026 Nikolozi Khachiashvili
 
 ---
 
