@@ -40,6 +40,12 @@ class FileMetrics:
     heating_up: bool = False
     churn_trend: str = "stable"   # "up", "down", or "stable"
 
+    # v1.3.0 fields
+    last_author: str = ""          # name of the most recent committer
+    last_commit_msg: str = ""      # subject line of the most recent commit
+    score_delta: Optional[int] = None   # vs last history scan (positive = improved)
+    sparkline: str = ""            # up-to-5-char sparkline from history (▁▂▃▄▅▆▇█)
+
     # Composite
     composite_score: int = 100
     diagnosis: str = "healthy"
@@ -221,6 +227,28 @@ def _diagnose(m: FileMetrics) -> str:
         base = mapping.get(worst, "needs attention")
 
     return base + suffix
+
+
+def letter_grade(score: int) -> str:
+    """Convert a 0-100 health score to a letter grade."""
+    if score >= 86:
+        return "A"
+    if score >= 70:
+        return "B"
+    if score >= 55:
+        return "C"
+    if score >= 40:
+        return "D"
+    return "F"
+
+
+def compute_repo_score(results: list[FileMetrics]) -> int:
+    """Weighted average of all file scores, weighted by line count."""
+    if not results:
+        return 100
+    total_weight = sum(max(m.lines, 1) for m in results)
+    weighted_sum = sum(m.composite_score * max(m.lines, 1) for m in results)
+    return int(weighted_sum / total_weight)
 
 
 def _status(score: int) -> str:

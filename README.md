@@ -87,6 +87,15 @@ deathbed --ci
 # Combine flags
 deathbed --path ~/projects/myapp --top 10 --format json
 deathbed --min-score 70 --ci
+
+# PR mode — only files changed since main
+deathbed --since main
+
+# Show last author in the table and Most Wanted panel
+deathbed --blame
+
+# Team leaderboard by last-commit author
+deathbed --leaderboard
 ```
 
 ### Options
@@ -101,6 +110,9 @@ deathbed --min-score 70 --ci
 | `--diff REF` | — | Compare health scores between HEAD and REF |
 | `--export html` | — | Export a self-contained HTML report to `deathbed-report.html` |
 | `--ci` | — | Exit code 1 if any CRITICAL files found (for CI pipelines) |
+| `--since REF` | — | PR mode — restrict to files changed since REF (e.g. `main`) |
+| `--blame` | — | Show last-author column in table and blame info in Most Wanted |
+| `--leaderboard` | — | Team view: authors ranked by files needing support |
 | `--version`, `-V` | — | Show version and exit |
 
 ---
@@ -228,13 +240,86 @@ Exits with **code 1** if any files are CRITICAL (score ≤ 40), printing a list 
 
 ---
 
+## Trend history (▲▼━ in the TREND column)
+
+deathbed stores a rolling history of up to 10 scans per repo in `~/.deathbed/history.json`.  On subsequent runs the **TREND** column appears in the table, showing each file's score delta vs the previous scan:
+
+| Symbol | Meaning |
+|--------|---------|
+| `▲ +N` | Score improved by N points since last scan |
+| `▼ -N` | Score worsened by N points since last scan |
+| `━  0` | No change |
+
+The **Most Wanted** panel also shows a 5-character sparkline (▁▂▃▄▅▆▇█) built from the file's score history.
+
+The **SCAN COMPLETE** panel shows the repo's overall weighted score (0–100) with a letter grade (A–F) and delta vs the previous scan.
+
+---
+
+## PR mode
+
+```bash
+deathbed --since main
+deathbed --since HEAD~5
+```
+
+Restricts the scan to files that have changed between `<REF>` and `HEAD` (using `git diff --name-only <REF>...HEAD`).  The SCAN COMPLETE panel notes "PR mode — N files changed since <ref>".  Ideal for per-PR health gates in code review.
+
+---
+
+## Blame mode
+
+```bash
+deathbed --blame
+```
+
+Adds a **LAST AUTHOR** column to the table showing who last committed to each file.  The Most Wanted panel also shows the last commit author and subject line.
+
+---
+
+## Team leaderboard
+
+```bash
+deathbed --leaderboard
+```
+
+Runs a full blame-enriched scan and groups results by last-commit author, showing:
+
+| Column | Meaning |
+|--------|---------|
+| AUTHOR | Git author name |
+| FILES | Number of files owned (last commit) |
+| AVG SCORE | Average health score across owned files |
+| CRITICAL | Files in CRITICAL state |
+| WARNING | Files in WARNING state |
+| GRADE | Letter grade A–F |
+
+Sorted by most at-risk first.  Framed as *who needs support*, not a blame ranking.
+
+---
+
+## Ignore file (.deathbedignore)
+
+Create a `.deathbedignore` file in your repo root using the same gitignore syntax to permanently exclude files from deathbed analysis:
+
+```
+# .deathbedignore
+vendor/**
+legacy/old_migration.py
+generated/**/*.py
+```
+
+The SCAN COMPLETE panel reports how many files were ignored.
+
+---
+
 ## JSON output
 
-`--format json` returns a machine-readable object with all new v1.2.0 fields:
+`--format json` returns a machine-readable object with all v1.2.0+ fields:
 
 ```json
 {
-  "version": "1.2.0",
+  "version": "1.3.0",
   "repo": "/path/to/repo",
   "total": 3,
   "files": [
@@ -280,7 +365,7 @@ Emits a GitHub-Flavored Markdown table suitable for pasting into PR comments or 
 
 `.py` `.js` `.ts` `.jsx` `.tsx` `.go` `.rs` `.rb` `.java` `.cpp` `.c` `.cs` `.php` `.swift` `.kt`
 
-Automatically skipped: `node_modules`, `venv`, `dist`, `build`, `.git`, binary files, lock files, and everything matched by `.gitignore`.
+Automatically skipped: `node_modules`, `venv`, `dist`, `build`, `.git`, binary files, lock files, and everything matched by `.gitignore` or `.deathbedignore`.
 
 ---
 

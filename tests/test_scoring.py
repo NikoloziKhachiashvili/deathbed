@@ -17,6 +17,8 @@ from deathbed.scoring import (
     _status,
     _test_score,
     compute_scores,
+    compute_repo_score,
+    letter_grade,
 )
 
 
@@ -321,6 +323,48 @@ def test_compute_scores_dead_code_non_python():
     m = _make(path="foo.js", avg_complexity=None, dead_code_count=10)
     compute_scores(m)
     assert m.dead_code_score == 75   # neutral for non-Python
+
+
+# ── letter_grade ──────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("score,expected", [
+    (100, "A"), (86, "A"), (85, "B"), (70, "B"), (69, "C"),
+    (55, "C"), (54, "D"), (40, "D"), (39, "F"), (0, "F"),
+])
+def test_letter_grade(score, expected):
+    assert letter_grade(score) == expected
+
+
+# ── compute_repo_score ────────────────────────────────────────────────────────
+
+def test_compute_repo_score_empty():
+    assert compute_repo_score([]) == 100
+
+
+def test_compute_repo_score_single():
+    m = _make(lines=100)
+    compute_scores(m)
+    assert compute_repo_score([m]) == m.composite_score
+
+
+def test_compute_repo_score_weighted_by_lines():
+    big   = _make(path="big.py",   lines=1000, days_since_commit=900, commit_count=200,
+                  avg_complexity=20.0, has_test_file=False, author_count=15,
+                  recent_churn=50, prev_churn=10)
+    small = _make(path="small.py", lines=10)
+    compute_scores(big)
+    compute_scores(small)
+    repo = compute_repo_score([big, small])
+    # big file's bad score should dominate
+    assert repo < small.composite_score
+
+
+def test_compute_repo_score_range():
+    files = [_make() for _ in range(5)]
+    for f in files:
+        compute_scores(f)
+    score = compute_repo_score(files)
+    assert 0 <= score <= 100
 
 
 def test_compute_scores_dead_code_python():

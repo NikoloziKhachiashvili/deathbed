@@ -7,9 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from unittest.mock import MagicMock, patch
+
 from deathbed.git_utils import (
     count_lines,
     detect_security_smells,
+    get_changed_files_since,
+    get_last_author,
     run_vulture,
 )
 
@@ -149,3 +153,65 @@ def test_run_vulture_returns_int_on_error(tmp_path):
 
 def test_run_vulture_missing_file():
     assert run_vulture(Path("/nonexistent/file.py")) == 0
+
+
+# ── get_last_author ───────────────────────────────────────────────────────────
+
+def test_get_last_author_returns_strings():
+    import git
+    mock_repo = MagicMock()
+    mock_repo.git.log.return_value = "Alice\x1ffix: resolve crash on startup"
+    name, msg = get_last_author(mock_repo, "src/foo.py")
+    assert name == "Alice"
+    assert "crash" in msg
+
+
+def test_get_last_author_no_separator():
+    mock_repo = MagicMock()
+    mock_repo.git.log.return_value = "no separator here"
+    name, msg = get_last_author(mock_repo, "src/foo.py")
+    assert name == ""
+    assert msg == ""
+
+
+def test_get_last_author_git_error():
+    import git
+    mock_repo = MagicMock()
+    mock_repo.git.log.side_effect = git.GitCommandError("log", 128)
+    name, msg = get_last_author(mock_repo, "missing.py")
+    assert name == ""
+    assert msg == ""
+
+
+def test_get_last_author_empty_output():
+    mock_repo = MagicMock()
+    mock_repo.git.log.return_value = ""
+    name, msg = get_last_author(mock_repo, "src/foo.py")
+    assert name == ""
+    assert msg == ""
+
+
+# ── get_changed_files_since ───────────────────────────────────────────────────
+
+def test_get_changed_files_since_returns_set():
+    mock_repo = MagicMock()
+    mock_repo.git.diff.return_value = "src/a.py\nsrc/b.py\n"
+    result = get_changed_files_since(mock_repo, "main")
+    assert "src/a.py" in result
+    assert "src/b.py" in result
+    assert isinstance(result, set)
+
+
+def test_get_changed_files_since_empty():
+    mock_repo = MagicMock()
+    mock_repo.git.diff.return_value = ""
+    result = get_changed_files_since(mock_repo, "HEAD~1")
+    assert result == set()
+
+
+def test_get_changed_files_since_git_error():
+    import git
+    mock_repo = MagicMock()
+    mock_repo.git.diff.side_effect = git.GitCommandError("diff", 128)
+    result = get_changed_files_since(mock_repo, "bad-ref")
+    assert result == set()

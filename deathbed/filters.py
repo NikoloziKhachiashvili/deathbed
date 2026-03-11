@@ -31,6 +31,18 @@ SKIP_PATTERNS = {
 }
 
 
+def _load_deathbedignore(repo_path: Path) -> pathspec.PathSpec:
+    """Load .deathbedignore from repo root into a PathSpec."""
+    patterns: list[str] = []
+    deathbedignore = repo_path / ".deathbedignore"
+    if deathbedignore.is_file():
+        try:
+            patterns = deathbedignore.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            pass
+    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+
+
 def _load_gitignore(repo_path: Path) -> pathspec.PathSpec:
     """Load .gitignore from repo root into a PathSpec."""
     patterns: list[str] = []
@@ -52,14 +64,19 @@ def _is_binary(path: Path) -> bool:
         return True
 
 
-def get_analyzable_files(repo_path: Path) -> list[Path]:
+def get_analyzable_files(repo_path: Path) -> tuple[list[Path], int]:
     """
-    Return a sorted list of relative Paths (relative to repo_path) that
-    should be analyzed. Respects .gitignore, skips binaries, locked dirs,
-    and unsupported extensions.
+    Return (files, ignored_count) where files is a sorted list of relative
+    Paths (relative to repo_path) that should be analyzed.
+
+    Respects .gitignore and .deathbedignore, skips binaries, locked dirs,
+    and unsupported extensions.  ignored_count is the number of files
+    excluded specifically by .deathbedignore.
     """
     spec = _load_gitignore(repo_path)
+    deathbed_spec = _load_deathbedignore(repo_path)
     results: list[Path] = []
+    ignored_count = 0
 
     for dirpath, dirnames, filenames in os.walk(repo_path):
         dir_abs = Path(dirpath)
@@ -90,6 +107,11 @@ def get_analyzable_files(repo_path: Path) -> list[Path]:
             if _is_binary(file_abs):
                 continue
 
+            # .deathbedignore check
+            if deathbed_spec.match_file(rel_str):
+                ignored_count += 1
+                continue
+
             results.append(rel_path)
 
-    return sorted(results, key=lambda p: p.as_posix())
+    return sorted(results, key=lambda p: p.as_posix()), ignored_count

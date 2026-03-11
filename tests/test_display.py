@@ -307,6 +307,96 @@ def test_render_diff_missing_historical():
     render_diff(current, historical, "HEAD~1")   # no overlap → empty table
 
 
+def test_render_summary_with_repo_score():
+    render_summary([_m()], 5, 0.5, repo_score=78, repo_score_delta=3)
+
+
+def test_render_summary_with_since_ref():
+    render_summary([_m()], 5, 0.5, since_ref="main", since_count=3)
+
+
+def test_render_summary_with_ignored_count():
+    render_summary([_m()], 5, 0.5, ignored_count=2)
+
+
+def test_render_summary_negative_delta():
+    render_summary([_m()], 5, 0.5, repo_score=60, repo_score_delta=-5)
+
+
+def test_render_table_with_trend():
+    m = _m()
+    m.score_delta = 3
+    render_table([m])
+
+
+def test_render_table_trend_worsened():
+    m = _m()
+    m.score_delta = -5
+    render_table([m])
+
+
+def test_render_table_trend_zero():
+    m = _m()
+    m.score_delta = 0
+    render_table([m])
+
+
+def test_render_table_show_blame():
+    m = _m()
+    m.last_author = "Alice"
+    m.last_commit_msg = "fix the bug"
+    render_table([m], show_blame=True)
+
+
+def test_render_table_show_blame_no_author():
+    m = _m()
+    render_table([m], show_blame=True)   # last_author="" → shows "—"
+
+
+def test_render_most_wanted_with_sparkline():
+    from deathbed.display import _render_most_wanted
+    m = _critical()
+    m.sparkline = "▁▂▃▅▇"
+    _render_most_wanted(m)
+
+
+def test_render_most_wanted_with_blame():
+    from deathbed.display import _render_most_wanted
+    m = _critical()
+    m.last_author = "Bob"
+    m.last_commit_msg = "refactor: big changes"
+    _render_most_wanted(m, show_blame=True)
+
+
+def test_render_most_wanted_blame_no_author():
+    from deathbed.display import _render_most_wanted
+    m = _critical()
+    _render_most_wanted(m, show_blame=True)  # no author → no crash
+
+
+def test_render_leaderboard_no_crash():
+    from deathbed.display import render_leaderboard
+    from deathbed.analyzer import AuthorStats
+    authors = [
+        AuthorStats("alice", 5, 72.0, 1, 2, "C"),
+        AuthorStats("bob",   3, 88.0, 0, 1, "A"),
+    ]
+    render_leaderboard(authors)
+
+
+def test_render_leaderboard_empty():
+    from deathbed.display import render_leaderboard
+    render_leaderboard([])
+
+
+def test_render_footer_with_blame():
+    from deathbed.display import render_footer
+    m = _critical()
+    m.last_author = "Carol"
+    m.last_commit_msg = "wip: stuff"
+    render_footer([m], Path("."), show_blame=True)
+
+
 def test_render_markdown_output(capsys):
     results = [_m("src/foo.py"), _critical()]
     render_markdown(results)

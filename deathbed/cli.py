@@ -66,6 +66,24 @@ from .display import console, render_error
     default=False,
     help="Exit code 1 if any CRITICAL files are found (for CI pipelines).",
 )
+@click.option(
+    "--since",
+    default=None,
+    metavar="REF",
+    help="PR mode — only show files changed since REF (e.g. main, HEAD~5).",
+)
+@click.option(
+    "--blame",
+    is_flag=True,
+    default=False,
+    help="Show last author column in table and blame info in Most Wanted.",
+)
+@click.option(
+    "--leaderboard",
+    is_flag=True,
+    default=False,
+    help="Show team leaderboard grouped by last author (implies --blame).",
+)
 @click.version_option(__version__, "--version", "-V", prog_name="deathbed")
 def main(
     path: str,
@@ -76,6 +94,9 @@ def main(
     diff: Optional[str],
     export_format: Optional[str],
     ci: bool,
+    since: Optional[str],
+    blame: bool,
+    leaderboard: bool,
 ) -> None:
     """
     \b
@@ -97,10 +118,18 @@ def main(
       deathbed --diff HEAD~1            # compare health vs last commit
       deathbed --export html            # export HTML report
       deathbed --ci                     # exit 1 if any CRITICAL files (CI use)
+      deathbed --since main             # PR mode — only changed files
+      deathbed --blame                  # show last author in table
+      deathbed --leaderboard            # team view by last author
     """
     repo_path = Path(path).resolve()
 
     # ── Mutually exclusive mode dispatch ──────────────────────────────────────
+    if leaderboard:
+        from .display import run_leaderboard_display
+        run_leaderboard_display(repo_path, top, min_score)
+        return
+
     if diff is not None:
         from .display import run_diff_display
         run_diff_display(repo_path, diff, top, min_score)
@@ -125,7 +154,7 @@ def main(
 
     # Default: rich terminal display (ci flag modifies exit behaviour)
     from .display import run_display
-    run_display(repo_path, top, min_score, ci_mode=ci)
+    run_display(repo_path, top, min_score, ci_mode=ci, since_ref=since, include_blame=blame)
 
 
 # ── Sub-runners ───────────────────────────────────────────────────────────────

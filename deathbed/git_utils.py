@@ -239,6 +239,34 @@ def detect_security_smells(abs_path: Path) -> list[str]:
     return list(dict.fromkeys(smells))
 
 
+# ── Blame helpers ─────────────────────────────────────────────────────────────
+
+def get_last_author(repo: git.Repo, rel_path: str) -> tuple[str, str]:
+    """Return (author_name, commit_subject) of the most recent commit for a file."""
+    try:
+        raw = repo.git.log(
+            "--follow", "-1",
+            "--format=%an\x1f%s",
+            "--",
+            rel_path,
+        )
+        if "\x1f" in raw:
+            name, subject = raw.strip().split("\x1f", 1)
+            return name.strip(), subject.strip()
+    except Exception:
+        pass
+    return "", ""
+
+
+def get_changed_files_since(repo: git.Repo, since_ref: str) -> set[str]:
+    """Return the set of file paths (POSIX) changed between since_ref and HEAD."""
+    try:
+        raw = repo.git.diff("--name-only", f"{since_ref}...HEAD")
+        return {line.strip() for line in raw.splitlines() if line.strip()}
+    except Exception:
+        return set()
+
+
 # ── Vulture dead-code detection ───────────────────────────────────────────────
 
 def run_vulture(abs_path: Path) -> int:

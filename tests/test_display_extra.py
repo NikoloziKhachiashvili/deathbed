@@ -90,10 +90,13 @@ def test_run_display_healthy_all(monkeypatch):
 
 def _fake_analyze(results):
     """Return a side_effect fn that calls on_progress so total_scanned gets set."""
-    def _impl(repo_path, top, min_score, on_progress=None, **kw):
+    def _impl(repo_path, top, min_score, on_progress=None, _meta=None, **kw):
         if on_progress:
             on_progress("src/foo.py", 0, len(results))
             on_progress("", len(results), len(results))
+        if _meta is not None:
+            _meta["ignored_count"] = 0
+            _meta["since_count"] = len(results)
         return results
     return _impl
 
@@ -293,6 +296,48 @@ def test_analyze_diff_with_security_smell(tmp_path):
 
     if current:
         assert current[0].has_security_smell is True
+
+
+def test_run_leaderboard_display_no_crash(monkeypatch):
+    from deathbed.display import run_leaderboard_display
+    from deathbed.analyzer import AuthorStats
+
+    authors = [AuthorStats("alice", 3, 72.0, 1, 1, "C")]
+
+    monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
+    with patch("deathbed.analyzer.analyze_leaderboard", return_value=authors):
+        run_leaderboard_display(Path("."), 50, None)
+
+
+def test_run_leaderboard_display_error(monkeypatch):
+    from deathbed.display import run_leaderboard_display
+    import git
+
+    monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
+    with patch("deathbed.analyzer.analyze_leaderboard",
+               side_effect=git.InvalidGitRepositoryError("bad")):
+        with pytest.raises(SystemExit) as exc_info:
+            run_leaderboard_display(Path("/bad"), 50, None)
+    assert exc_info.value.code == 1
+
+
+def test_run_display_with_since_ref(monkeypatch):
+    from deathbed.display import run_display
+    results = [_m()]
+
+    monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
+    with patch("deathbed.analyzer.analyze_repo", side_effect=_fake_analyze(results)):
+        run_display(Path("."), 50, None, since_ref="main")
+
+
+def test_run_display_with_blame(monkeypatch):
+    from deathbed.display import run_display
+    results = [_m()]
+    results[0].last_author = "Alice"
+
+    monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
+    with patch("deathbed.analyzer.analyze_repo", side_effect=_fake_analyze(results)):
+        run_display(Path("."), 50, None, include_blame=True)
 
 
 def test_analyze_repo_skips_failed_files(monkeypatch, tmp_path):

@@ -42,7 +42,7 @@ from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from .scoring import FileMetrics
+from .scoring import FileMetrics, letter_grade
 
 # ── Global console ─────────────────────────────────────────────────────────────
 # legacy_windows=False forces Rich to use ANSI/VT sequences on Windows 10+
@@ -208,6 +208,12 @@ def render_summary(
     results: list[FileMetrics],
     total_scanned: int,
     elapsed: float,
+    *,
+    repo_score: int = 0,
+    repo_score_delta: Optional[int] = None,
+    since_ref: Optional[str] = None,
+    since_count: int = 0,
+    ignored_count: int = 0,
 ) -> None:
     """Display the post-scan summary stats panel."""
     critical      = sum(1 for m in results if m.status == "CRITICAL")
@@ -218,7 +224,7 @@ def render_summary(
     sec_smell_ct  = sum(1 for m in results if m.has_security_smell)
 
     grid = Table.grid(expand=True, padding=(0, 2))
-    for _ in range(8):
+    for _ in range(9):
         grid.add_column(justify="center")
 
     def _stat(icon: str, label: str, value: str, color: str) -> Text:
@@ -227,6 +233,20 @@ def render_summary(
         t.append(f"{value}\n", style=f"bold {color}")
         t.append(label, style=f"dim {C_GREY}")
         return t
+
+    # Repo score cell with grade and optional delta
+    grade = letter_grade(repo_score)
+    grade_color = _score_color(repo_score)
+    delta_str = ""
+    if repo_score_delta is not None:
+        if repo_score_delta > 0:
+            delta_str = f" ▲+{repo_score_delta}"
+        elif repo_score_delta < 0:
+            delta_str = f" ▼{repo_score_delta}"
+    repo_score_t = Text(justify="center")
+    repo_score_t.append("📊\n", style=f"bold {grade_color}")
+    repo_score_t.append(f"{grade} ({repo_score}){delta_str}\n", style=f"bold {grade_color}")
+    repo_score_t.append("repo score", style=f"dim {C_GREY}")
 
     grid.add_row(
         _stat("🔍", "scanned",    str(total_scanned), C_WHITE),
@@ -237,11 +257,21 @@ def render_summary(
         _stat("🧟", "dead code",  str(dead_code_ct),   C_ORANGE),
         _stat("🔐", "sec smells", str(sec_smell_ct),   C_RED1),
         _stat("⏱ ", "duration",  f"{elapsed:.2f}s",   C_GREY),
+        repo_score_t,
     )
+
+    # Build subtitle for PR mode / ignored files
+    subtitles: list[str] = []
+    if since_ref:
+        subtitles.append(f"PR mode — {since_count} file(s) changed since {since_ref}")
+    if ignored_count > 0:
+        subtitles.append(f"{ignored_count} file(s) ignored via .deathbedignore")
+    panel_subtitle = f"[dim {C_GREY}]{' · '.join(subtitles)}[/]" if subtitles else None
 
     panel = Panel(
         Padding(grid, (1, 0)),
         title=f"[bold {C_CRIMSON}]  SCAN COMPLETE  [/]",
+        subtitle=panel_subtitle,
         border_style=C_RED5,
         box=box.HEAVY,
     )
@@ -249,7 +279,7 @@ def render_summary(
     console.print()
 
 
-def render_table(results: list[FileMetrics]) -> None:
+def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
     """Render the main beautiful results table."""
     if not results:
         console.print(
@@ -259,6 +289,9 @@ def render_table(results: list[FileMetrics]) -> None:
             )
         )
         return
+
+    # Detect whether any file has trend history
+    has_trend = any(m.score_delta is not None for m in results)
 
     table = Table(
         box=box.SIMPLE_HEAVY,
@@ -276,15 +309,19 @@ def render_table(results: list[FileMetrics]) -> None:
 
     table.add_column("HLTH",    justify="center", width=7,  no_wrap=True)
     table.add_column("FILE",    justify="left",   ratio=2,  no_wrap=True)
+    if has_trend:
+        table.add_column("TREND",  justify="right",  width=7,  no_wrap=True)
     table.add_column("LINES",   justify="right",  width=6,  no_wrap=True)
     table.add_column("TOUCHED", justify="right",  width=10, no_wrap=True)
     table.add_column("CHURN",   justify="right",  width=5,  no_wrap=True)
-    table.add_column("RECENT",  justify="right",  width=7,  no_wrap=True)  # +1 for arrow
+    table.add_column("RECENT",  justify="right",  width=7,  no_wrap=True)
     table.add_column("AUTH",    justify="right",  width=4,  no_wrap=True)
     table.add_column("CPLX",    justify="right",  width=5,  no_wrap=True)
+    if show_blame:
+        table.add_column("LAST AUTHOR", justify="left", width=14, no_wrap=True)
     table.add_column("DIAGNOSIS", justify="left", ratio=1,  no_wrap=True)
 
-    _trend_arrow = {"up": ("▲", C_SKULL), "down": ("▼", C_DIM_GREEN), "stable": ("━", C_DIM)}
+    _churn_arrow = {"up": ("▲", C_SKULL), "down": ("▼", C_DIM_GREEN), "stable": ("━", C_DIM)}
 
     for m in results:
         style = _row_style(m.status)
@@ -299,6 +336,20 @@ def render_table(results: list[FileMetrics]) -> None:
         display_path = _truncate(m.path, 60)
         file_t = Text(escape(display_path), style=style, no_wrap=True)
 
+        # TREND cell (history delta)
+        row_cells: list = [health_t, file_t]
+        if has_trend:
+            if m.score_delta is not None:
+                if m.score_delta > 0:
+                    trend_t = Text(f"▲ +{m.score_delta}", style=C_GREEN, justify="right")
+                elif m.score_delta < 0:
+                    trend_t = Text(f"▼ {m.score_delta}", style=C_SKULL, justify="right")
+                else:
+                    trend_t = Text("━  0", style=C_DIM, justify="right")
+            else:
+                trend_t = Text("━", style=C_DIM, justify="right")
+            row_cells.append(trend_t)
+
         # LINES cell
         lines_color = (
             C_SKULL  if m.lines > 1000 else
@@ -307,6 +358,7 @@ def render_table(results: list[FileMetrics]) -> None:
             C_GREEN
         )
         lines_t = Text(f"{m.lines:,}", style=f"bold {lines_color}", justify="right")
+        row_cells.append(lines_t)
 
         # LAST TOUCHED cell
         age_color = (
@@ -316,6 +368,7 @@ def render_table(results: list[FileMetrics]) -> None:
             C_GREEN
         )
         age_t = Text(_human_days(m.days_since_commit), style=age_color, justify="right")
+        row_cells.append(age_t)
 
         # CHURN cell
         churn_color = (
@@ -325,18 +378,20 @@ def render_table(results: list[FileMetrics]) -> None:
             C_GREEN
         )
         churn_t = Text(str(m.commit_count), style=churn_color, justify="right")
+        row_cells.append(churn_t)
 
-        # RECENT CHURN cell with trend arrow ▲▼━
+        # RECENT CHURN cell with churn-trend arrow ▲▼━
         recent_color = (
             C_SKULL  if m.recent_churn > 30 else
             C_ORANGE if m.recent_churn > 15 else
             C_AMBER  if m.recent_churn > 5  else
             C_GREEN
         )
-        arrow, arrow_color = _trend_arrow.get(m.churn_trend, ("━", C_DIM))
+        arrow, arrow_color = _churn_arrow.get(m.churn_trend, ("━", C_DIM))
         recent_t = Text(justify="right")
         recent_t.append(str(m.recent_churn), style=recent_color)
         recent_t.append(f" {arrow}", style=arrow_color)
+        row_cells.append(recent_t)
 
         # AUTHORS cell
         auth_color = (
@@ -346,6 +401,7 @@ def render_table(results: list[FileMetrics]) -> None:
             C_GREEN
         )
         auth_t = Text(str(m.author_count), style=auth_color, justify="right")
+        row_cells.append(auth_t)
 
         # COMPLEXITY cell
         if m.avg_complexity is not None:
@@ -360,6 +416,13 @@ def render_table(results: list[FileMetrics]) -> None:
             cx_val   = "N/A"
             cx_color = C_DIM
         cx_t = Text(cx_val, style=cx_color, justify="right")
+        row_cells.append(cx_t)
+
+        # LAST AUTHOR cell (blame mode)
+        if show_blame:
+            author_display = _truncate(m.last_author, 12) if m.last_author else "—"
+            author_t = Text(author_display, style=C_GREY, justify="left")
+            row_cells.append(author_t)
 
         # DIAGNOSIS cell
         diag_color = (
@@ -369,22 +432,24 @@ def render_table(results: list[FileMetrics]) -> None:
             C_DIM_GREEN
         )
         diag_t = Text(m.diagnosis, style=f"italic {diag_color}")
+        row_cells.append(diag_t)
 
-        table.add_row(
-            health_t, file_t, lines_t, age_t,
-            churn_t, recent_t, auth_t, cx_t, diag_t,
-        )
+        table.add_row(*row_cells)
 
     console.print(table)
     console.print()
 
 
-def render_footer(results: list[FileMetrics], repo_root: Path) -> None:
+def render_footer(
+    results: list[FileMetrics],
+    repo_root: Path,
+    show_blame: bool = False,
+) -> None:
     """Render the Most Wanted, Quick Wins, Tips, and Security Alerts panels."""
     if not results:
         return
 
-    _render_most_wanted(results[0])
+    _render_most_wanted(results[0], show_blame=show_blame)
     _render_quick_wins(results)
     _render_tips(results)
     _render_security_alerts(results)
@@ -392,7 +457,7 @@ def render_footer(results: list[FileMetrics], repo_root: Path) -> None:
 
 # ── Footer helpers ─────────────────────────────────────────────────────────────
 
-def _render_most_wanted(worst: FileMetrics) -> None:
+def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
     """Detailed breakdown of the single worst file."""
     score_table = Table.grid(expand=True, padding=(0, 1))
     score_table.add_column(justify="left",  width=13)
@@ -438,13 +503,32 @@ def _render_most_wanted(worst: FileMetrics) -> None:
         )
         _row("dead code", worst.dead_code_score, "Vulture", dead_display)
 
+    # Build header
     header = Text(justify="left")
-    header.append(f"  {escape(worst.path)}\n", style=f"bold {C_WHITE}")
+    header.append(f"  {escape(worst.path)}", style=f"bold {C_WHITE}")
+
+    # Sparkline (if history available)
+    if worst.sparkline:
+        header.append("   ", style="")
+        header.append(worst.sparkline, style=f"bold {_score_color(worst.composite_score)}")
+
+    header.append("\n", style="")
     header.append(f"  \"{worst.diagnosis}\"", style=f"italic dim {C_GREY}")
     header.append(
         f"   {_health_icon(worst.status)} {worst.composite_score}/100",
         style=f"bold {_score_color(worst.composite_score)}",
     )
+
+    # Blame info (if available and show_blame requested)
+    if show_blame and worst.last_author:
+        header.append("\n", style="")
+        msg_display = _truncate(worst.last_commit_msg, 60) if worst.last_commit_msg else ""
+        header.append(
+            f"  last commit by: {escape(worst.last_author)}",
+            style=f"dim {C_GREY}",
+        )
+        if msg_display:
+            header.append(f" — \"{escape(msg_display)}\"", style=f"dim {C_GREY}")
 
     outer = Table.grid(expand=True, padding=(0, 0))
     outer.add_column()
@@ -744,6 +828,65 @@ def render_markdown(results: list[FileMetrics]) -> None:
         click.echo("| " + " | ".join(row) + " |")
 
 
+# ── Leaderboard renderer ───────────────────────────────────────────────────────
+
+def render_leaderboard(authors: list) -> None:
+    """Render the team leaderboard table (authors sorted by most-at-risk first)."""
+    if not authors:
+        console.print(
+            Panel(
+                f"[bold {C_AMBER}]  No author data found. "
+                f"Try running with --blame in a repo with git history.[/]",
+                border_style=C_AMBER,
+            )
+        )
+        return
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        border_style=C_RED6,
+        header_style=f"bold {C_CRIMSON}",
+        show_edge=True,
+        expand=True,
+        title=f"[bold {C_CRIMSON}]TEAM LEADERBOARD[/]",
+        title_style=f"bold {C_CRIMSON}",
+        caption=f"[dim {C_GREY}]sorted by most files needing support — framed as opportunity, not blame[/]",
+        caption_style=f"dim {C_GREY}",
+        padding=(0, 1),
+    )
+    table.add_column("AUTHOR",    justify="left",   ratio=1,  no_wrap=True)
+    table.add_column("FILES",     justify="right",  width=6,  no_wrap=True)
+    table.add_column("AVG SCORE", justify="center", width=10, no_wrap=True)
+    table.add_column("CRITICAL",  justify="right",  width=8,  no_wrap=True)
+    table.add_column("WARNING",   justify="right",  width=7,  no_wrap=True)
+    table.add_column("GRADE",     justify="center", width=6,  no_wrap=True)
+
+    for a in authors:
+        grade_color = _score_color(int(a.avg_score))
+        crit_color  = C_SKULL  if a.critical_count > 0 else C_DIM_GREEN
+        warn_color  = C_ORANGE if a.warning_count  > 0 else C_DIM
+
+        table.add_row(
+            Text(escape(a.author),           style=C_WHITE),
+            Text(str(a.files_owned),         style=C_GREY,        justify="right"),
+            Text(f"{a.avg_score:.0f}",       style=grade_color,   justify="center"),
+            Text(str(a.critical_count),      style=crit_color,    justify="right"),
+            Text(str(a.warning_count),       style=warn_color,    justify="right"),
+            Text(a.grade,                    style=f"bold {grade_color}", justify="center"),
+        )
+
+    console.print(table)
+    console.print()
+
+    note = Text(justify="center")
+    note.append(
+        "💡  Use this table to prioritise code review support, not to rank developers.",
+        style=f"italic dim {C_GREY}",
+    )
+    console.print(Align(note, align="center"))
+    console.print()
+
+
 # ── Main entry points ──────────────────────────────────────────────────────────
 
 def run_display(
@@ -751,17 +894,30 @@ def run_display(
     top: int,
     min_score: Optional[int],
     ci_mode: bool = False,
+    since_ref: Optional[str] = None,
+    include_blame: bool = False,
 ) -> None:
     """Full deathbed run: header → scan → table → footer."""
     from .analyzer import analyze_repo
+    from .history import enrich_with_history, get_repo_score_delta, save_scan
+    from .scoring import compute_repo_score
 
     if not ci_mode:
         render_header()
+
+    # Pre-resolve repo root for history keying (graceful fallback to repo_path)
+    repo_root = repo_path
+    try:
+        from .git_utils import open_repo as _or, get_repo_root as _grr
+        repo_root = _grr(_or(repo_path))
+    except Exception:
+        pass
 
     try:
         start = time.monotonic()
         results: list[FileMetrics] = []
         total_scanned = 0
+        meta: dict = {}
 
         with make_progress() as progress:
             task = progress.add_task(
@@ -786,6 +942,9 @@ def run_display(
                 top=top,
                 min_score=min_score,
                 on_progress=on_progress,
+                since_ref=since_ref,
+                include_blame=include_blame,
+                _meta=meta,
             )
 
         elapsed = time.monotonic() - start
@@ -798,16 +957,32 @@ def run_display(
             )
             return
 
+        # History enrichment (sets score_delta + sparkline per file)
+        repo_score       = compute_repo_score(results)
+        enrich_with_history(results, repo_root)
+        repo_score_delta = get_repo_score_delta(repo_root, repo_score)
+        save_scan(repo_root, results, repo_score)
+
+        ignored_count = meta.get("ignored_count", 0)
+        since_count   = meta.get("since_count", 0)
+
         if ci_mode:
             _run_ci(results, total_scanned)
             return
 
-        render_summary(results, total_scanned, elapsed)
-        render_table(results)
+        render_summary(
+            results, total_scanned, elapsed,
+            repo_score=repo_score,
+            repo_score_delta=repo_score_delta,
+            since_ref=since_ref,
+            since_count=since_count,
+            ignored_count=ignored_count,
+        )
+        render_table(results, show_blame=include_blame)
 
         non_healthy = [m for m in results if m.status != "HEALTHY"]
         if non_healthy:
-            render_footer(non_healthy, repo_path)
+            render_footer(non_healthy, repo_path, show_blame=include_blame)
         else:
             console.print(
                 Panel(
@@ -929,4 +1104,34 @@ def run_diff_display(
         sys.exit(1)
     except Exception as exc:
         render_error("Diff failed", str(exc))
+        sys.exit(1)
+
+
+def run_leaderboard_display(
+    repo_path: Path,
+    top: int,
+    min_score: Optional[int],
+) -> None:
+    """Run blame-based analysis and display the team leaderboard."""
+    from .analyzer import analyze_leaderboard
+
+    render_header()
+
+    try:
+        with make_progress() as progress:
+            progress.add_task(
+                "Building leaderboard",
+                total=None,
+                color=C_CRIMSON,
+                current_file="",
+            )
+            authors = analyze_leaderboard(repo_path)
+
+        render_leaderboard(authors)
+
+    except git.InvalidGitRepositoryError:
+        render_error("Not a git repository", str(repo_path))
+        sys.exit(1)
+    except Exception as exc:
+        render_error("Leaderboard failed", str(exc))
         sys.exit(1)

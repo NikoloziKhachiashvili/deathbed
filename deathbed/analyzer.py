@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional
@@ -13,8 +14,10 @@ from .git_utils import (
     count_lines,
     detect_security_smells,
     find_test_file,
+    get_changed_files_since,
     get_complexity,
     get_file_history,
+    get_last_author,
     get_ref_timestamp,
     get_repo_root,
     open_repo,
@@ -23,22 +26,40 @@ from .git_utils import (
 from .scoring import FileMetrics, compute_scores
 
 
+@dataclass
+class AuthorStats:
+    author: str
+    files_owned: int
+    avg_score: float
+    critical_count: int
+    warning_count: int
+    grade: str
+
+
 def analyze_repo(
     repo_path: Path,
     top: int = 50,
     min_score: Optional[int] = None,
     quiet: bool = False,
     on_progress: Optional[Callable[[str, int, int], None]] = None,
+    since_ref: Optional[str] = None,
+    include_blame: bool = False,
+    _meta: Optional[dict] = None,
 ) -> list[FileMetrics]:
     """
     Analyze a git repository and return scored FileMetrics, worst-first.
 
     Args:
-        repo_path:    Path to the repo (or any subdir).
-        top:          Return at most N results (0 = unlimited).
-        min_score:    Only return files with composite_score < min_score.
-        quiet:        Suppress internal prints.
-        on_progress:  Callback(rel_path, current_index, total) called per file.
+        repo_path:     Path to the repo (or any subdir).
+        top:           Return at most N results (0 = unlimited).
+        min_score:     Only return files with composite_score < min_score.
+        quiet:         Suppress internal prints.
+        on_progress:   Callback(rel_path, current_index, total) called per file.
+        since_ref:     If given, restrict analysis to files changed since this ref
+                       (PR mode).
+        include_blame: If True, populate last_author / last_commit_msg per file.
+        _meta:         Optional dict that gets populated with repo_root,
+                       ignored_count, and since_count for the caller.
 
     Raises:
         git.InvalidGitRepositoryError: if path is not inside a git repo.
@@ -47,7 +68,18 @@ def analyze_repo(
     repo = open_repo(repo_path)
     root = get_repo_root(repo)
 
-    files = get_analyzable_files(root)
+    files, ignored_count = get_analyzable_files(root)
+
+    # PR mode: restrict to files changed since the given ref
+    if since_ref is not None:
+        changed = get_changed_files_since(repo, since_ref)
+        files = [f for f in files if f.as_posix() in changed]
+
+    if _meta is not None:
+        _meta["repo_root"]     = root
+        _meta["ignored_count"] = ignored_count
+        _meta["since_count"]   = len(files)
+
     total = len(files)
     results: list[FileMetrics] = []
 
@@ -82,6 +114,10 @@ def analyze_repo(
                 security_smells=sec_smells,
             )
             compute_scores(m)
+
+            if include_blame:
+                m.last_author, m.last_commit_msg = get_last_author(repo, rel_str)
+
             results.append(m)
         except Exception:
             # Never crash on a single file; silently skip it
@@ -184,7 +220,7 @@ def analyze_diff(
     root     = get_repo_root(repo)
     before_ts = get_ref_timestamp(repo, ref)
 
-    files = get_analyzable_files(root)
+    files, _ = get_analyzable_files(root)
     total = len(files)
 
     current_results:    list[FileMetrics] = []
@@ -254,3 +290,41 @@ def analyze_diff(
     historical_results.sort(key=lambda m: m.composite_score)
 
     return current_results, historical_results
+
+
+def analyze_leaderboard(
+    repo_path: Path,
+    top: Optional[int] = None,
+) -> list[AuthorStats]:
+    """
+    Compute per-author stats based on last-author ownership.
+
+    Calls analyze_repo internally with include_blame=True and aggregates
+    the results by author.  Returns a list sorted by critical_count descending,
+    then avg_score ascending (most-at-risk authors first).
+    """
+    from .scoring import letter_grade
+
+    results = analyze_repo(repo_path, top=0, include_blame=True)
+
+    author_data: dict[str, list[FileMetrics]] = {}
+    for m in results:
+        if m.last_author:
+            author_data.setdefault(m.last_author, []).append(m)
+
+    stats_list: list[AuthorStats] = []
+    for author, metrics in author_data.items():
+        avg_score = sum(m.composite_score for m in metrics) / len(metrics)
+        stats_list.append(AuthorStats(
+            author=author,
+            files_owned=len(metrics),
+            avg_score=avg_score,
+            critical_count=sum(1 for m in metrics if m.status == "CRITICAL"),
+            warning_count=sum(1 for m in metrics if m.status == "WARNING"),
+            grade=letter_grade(int(avg_score)),
+        ))
+
+    stats_list.sort(key=lambda s: (-s.critical_count, s.avg_score))
+    if top and top > 0:
+        stats_list = stats_list[:top]
+    return stats_list

@@ -41,7 +41,7 @@ def runner():
 def test_version_flag(runner):
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "1.2.0" in result.output
+    assert "1.3.0" in result.output
 
 
 def test_help_flag(runner):
@@ -145,3 +145,43 @@ def test_run_markdown_output(runner, tmp_path):
     # Markdown output should contain pipe characters
     if result.exit_code == 0 and result.output:
         assert "|" in result.output or result.output == ""
+
+
+def test_since_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--since" in result.output
+
+
+def test_blame_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--blame" in result.output
+
+
+def test_leaderboard_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--leaderboard" in result.output
+
+
+def test_leaderboard_dispatches(runner, tmp_path):
+    with patch("deathbed.display.run_leaderboard_display") as mock_lb:
+        mock_lb.return_value = None
+        runner.invoke(main, ["--leaderboard", "--path", str(tmp_path)])
+        mock_lb.assert_called_once()
+
+
+def test_since_passes_to_run_display(runner, tmp_path):
+    with patch("deathbed.display.run_display") as mock_display:
+        mock_display.return_value = None
+        runner.invoke(main, ["--since", "main", "--path", str(tmp_path)])
+        mock_display.assert_called_once()
+        _, kwargs = mock_display.call_args
+        assert kwargs.get("since_ref") == "main"
+
+
+def test_blame_passes_to_run_display(runner, tmp_path):
+    with patch("deathbed.display.run_display") as mock_display:
+        mock_display.return_value = None
+        runner.invoke(main, ["--blame", "--path", str(tmp_path)])
+        mock_display.assert_called_once()
+        _, kwargs = mock_display.call_args
+        assert kwargs.get("include_blame") is True
