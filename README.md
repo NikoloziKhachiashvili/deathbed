@@ -22,7 +22,7 @@
 
 **deathbed** analyses every tracked source file in a git repository and gives it a **health score** based on nine real, local metrics — no external API calls, no secrets needed.  It surfaces the files most likely to cause you pain, explains *why* they are dying, and tells you exactly what to do first.
 
-**v2.0.0** adds multi-repo org scanning, an AI-free refactor planner, and GitHub Actions integration.
+**v3.0.0** adds decay prediction, an interactive TUI, a terminal heat map, a git regression guard, and multi-language complexity analysis (JS/TS/Go/Rust).
 
 ---
 
@@ -38,6 +38,12 @@ deathbed makes the invisible visible.
 
 ```bash
 pip install deathbed
+```
+
+For the interactive TUI (`--interactive`), install the optional `textual` dependency:
+
+```bash
+pip install "deathbed[interactive]"
 ```
 
 Or, to hack on it:
@@ -113,6 +119,18 @@ deathbed --init-ci
 
 # Print a shields.io health badge for your README
 deathbed --badge
+
+# Interactive TUI with keyboard navigation (requires: pip install deathbed[interactive])
+deathbed --interactive
+
+# Terminal heat map — file sizes proportional to lines, coloured by health score
+deathbed --heatmap
+
+# Install a post-commit git hook to catch regressions automatically
+deathbed --install-hook
+
+# Remove the deathbed post-commit hook
+deathbed --uninstall-hook
 ```
 
 ### Options
@@ -135,6 +153,10 @@ deathbed --badge
 | `--plan` | — | Generate a prioritised Sprint 1/2/3 refactor roadmap |
 | `--init-ci` | — | Write a GitHub Actions workflow to `.github/workflows/deathbed.yml` |
 | `--badge` | — | Print a shields.io Markdown health badge for your README |
+| `--interactive`, `-i` | — | Launch interactive TUI (requires `deathbed[interactive]`) |
+| `--heatmap` | — | Render a terminal treemap coloured by health score |
+| `--install-hook` | — | Install a post-commit regression guard hook in `.git/hooks/` |
+| `--uninstall-hook` | — | Remove the deathbed post-commit hook |
 | `--version`, `-V` | — | Show version and exit |
 
 ---
@@ -156,12 +178,24 @@ Each file receives a **composite health score from 0–100** (higher is healthie
 | 1 | **Size** | 11.7% | Lines of code — penalises files > 300 / 600 / 1000 lines |
 | 2 | **Age** | 11.7% | Days since any commit touched this file — flags abandoned code |
 | 3 | **Churn** | 8.1% | Total number of commits — instability signal |
-| 4 | **Complexity** | 16.2% | Radon cyclomatic complexity average — Python only; N/A otherwise |
+| 4 | **Complexity** | 16.2% | Cyclomatic complexity average — Python (radon), JS/TS (heuristic), Go (gocyclo), Rust (match-arm count) |
 | 5 | **Authors** | 10.8% | Unique git authors — many authors = diffused ownership |
 | 6 | **Test coverage** | 8.1% | Whether a corresponding test file exists and has real assertions |
 | 7 | **Recent churn** | 14.4% | Commits in the last 90 days — hotspot detection |
-| 8 | **Dead code** | 9.0% | Unused functions/classes/variables detected by vulture (Python only) |
+| 8 | **Dead code** | 9.0% | Unused symbols (vulture for Python; annotations/markers for JS/TS/Go/Rust) |
 | 9 | **Coupling** | 10.0% | How many other files import this file — high coupling = fragile hub |
+
+### Language support
+
+| Language | Complexity | Dead code |
+|----------|-----------|-----------|
+| Python (`.py`) | radon cyclomatic complexity | vulture unused symbols |
+| JavaScript / TypeScript (`.js` `.ts` `.jsx` `.tsx`) | function/class/arrow heuristic | TODO/FIXME/DEAD comment density |
+| Go (`.go`) | gocyclo subprocess (graceful fallback) | `#[allow(dead_code)]` equivalent markers |
+| Rust (`.rs`) | match-arm + function count heuristic | `#[allow(dead_code)]` annotation count |
+| All others | N/A (skipped, not penalised) | N/A |
+
+Go complexity requires `gocyclo` to be installed (`go install github.com/fzipp/gocyclo/cmd/gocyclo@latest`).  If it is not present deathbed silently skips complexity for `.go` files — no crash, no error.
 
 ### Health thresholds
 
@@ -221,6 +255,90 @@ If any files contain dangerous import or call patterns, a dedicated red **SECURI
 The **COUP** column in the main table shows how many other files import each file.  Files with 5+ importers are flagged as coupling hotspots and counted in the SCAN COMPLETE bar.
 
 A dedicated **MOST COUPLED** panel lists the top 3 most-imported files and shows which files depend on them.  When a file is both heavily coupled *and* complex and large, it receives the `god file` diagnosis.
+
+---
+
+## Decay prediction
+
+After three or more scans, deathbed uses **linear regression** on `~/.deathbed/history.json` to forecast when each file's score will cross a threshold:
+
+- An **ETA** column appears in the table showing days until the file crosses WARNING (65) or CRITICAL (40)
+- A **DECAY FORECAST** panel lists every declining file with its slope (points/week) and estimated crossing date
+- The **SCAN COMPLETE** bar shows a `DECAYING` counter — files projected to cross a threshold within 30 days
+- The **Most Wanted** panel shows slope and ETA for the single worst file
+
+Thresholds and the forecast horizon are configurable in `.deathbed.toml`.
+
+---
+
+## Interactive TUI
+
+```bash
+deathbed --interactive
+# or
+deathbed -i
+```
+
+Requires: `pip install "deathbed[interactive]"` (installs [textual](https://github.com/Textualize/textual)).  If textual is not installed, deathbed falls back to the standard Rich output automatically.
+
+The TUI provides:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate the file table |
+| `Enter` | Open detail view for the selected file |
+| `p` | Open the Sprint refactor plan screen |
+| `/` | Filter files by name |
+| `s` | Cycle sort column (score / file / diagnosis) |
+| `q` / `Esc` | Go back / quit |
+
+The detail screen shows the full metric breakdown, sparkline history, decay forecast, and the specific refactoring action recommended for that file.
+
+---
+
+## Terminal heat map
+
+```bash
+deathbed --heatmap
+```
+
+Renders a **treemap** directly in the terminal.  Each file is represented as a block whose **area is proportional to its line count** and whose **colour reflects its health score**:
+
+| Colour | Score range |
+|--------|-------------|
+| 🟥 Red (█) | CRITICAL (0–40) |
+| 🟧 Orange (▓) | WARNING (41–65) |
+| 🟨 Yellow (▒) | FAIR (66–85) |
+| 🟩 Green (░) | HEALTHY (86–100) |
+
+Requires a terminal at least 80 columns wide.  Falls back to a plain sorted list if the terminal is too narrow.
+
+---
+
+## Regression guard
+
+```bash
+# Install the hook (one-time, per repo)
+deathbed --install-hook
+
+# Remove it
+deathbed --uninstall-hook
+```
+
+Installs a **`post-commit` git hook** that re-runs deathbed after every commit and checks for score regressions vs the previous scan:
+
+- **Warn** (default: drop ≥ 10 points) — prints a ⚠️ warning but lets the commit through
+- **Block** (default: drop ≥ 20 points) — prints a 🚨 alert and exits with code 1, preventing the push
+
+Thresholds are configurable in `.deathbed.toml`:
+
+```toml
+[guard]
+warn_drop  = 10   # points drop that triggers a warning
+block_drop = 20   # points drop that blocks the commit
+```
+
+The hook is idempotent — safe to run `--install-hook` multiple times.  If a `post-commit` hook already exists and was **not** created by deathbed, the install will fail with a clear error rather than silently overwriting your hook.
 
 ---
 
@@ -305,9 +423,9 @@ Generates a prioritised **Sprint 1 / 2 / 3 roadmap** from the current scan resul
 - Effort estimate: **Small**, **Medium**, or **Large**
 - Current health score
 
-Sprint 1 = CRITICAL files with Small/Medium effort (highest ROI).
-Sprint 2 = remaining CRITICAL + WARNING files.
-Sprint 3 = lower-priority improvements.
+Sprint 1 = CRITICAL files (do this week).
+Sprint 2 = WARNING files (do this month).
+Sprint 3 = FAIR files (do this quarter).
 
 ---
 
@@ -404,6 +522,31 @@ Sorted by most at-risk first.  Framed as *who needs support*, not a blame rankin
 
 ---
 
+## Configuration (.deathbed.toml)
+
+Create a `.deathbed.toml` file in your repo root (or `~/.deathbed/config.toml` for global defaults) to override any setting.  Repo config takes precedence over global config.
+
+```toml
+[thresholds]
+warning  = 65   # score below which a file is WARNING
+critical = 40   # score below which a file is CRITICAL
+
+[guard]
+warn_drop  = 10   # post-commit: warn when score drops this many points
+block_drop = 20   # post-commit: block commit when score drops this many points
+
+[org]
+exclude = ["archived-repos", "vendor"]   # repo names to skip in --org scans
+
+[decay]
+min_scans    = 3    # minimum historical scans before decay prediction kicks in
+horizon_days = 30   # only show ETA if threshold will be crossed within this many days
+```
+
+All sections and keys are optional — omit any you don't need.  deathbed falls back to built-in defaults if TOML libraries (`tomllib` / `tomli`) are not available.
+
+---
+
 ## Ignore file (.deathbedignore)
 
 Create a `.deathbedignore` file in your repo root using the same gitignore syntax to permanently exclude files from analysis:
@@ -425,7 +568,7 @@ The SCAN COMPLETE panel reports how many files were ignored.
 
 ```json
 {
-  "version": "2.0.0",
+  "version": "3.0.0",
   "repo": "/path/to/repo",
   "total": 3,
   "files": [
