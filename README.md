@@ -20,7 +20,9 @@
 
 ---
 
-**deathbed** analyses every tracked source file in a git repository and gives it a **health score** based on eight real, local metrics — no external API calls, no secrets needed.  It then surfaces the files most likely to cause you pain, explains *why* they are dying, and tells you exactly what to do first.
+**deathbed** analyses every tracked source file in a git repository and gives it a **health score** based on nine real, local metrics — no external API calls, no secrets needed.  It surfaces the files most likely to cause you pain, explains *why* they are dying, and tells you exactly what to do first.
+
+**v2.0.0** adds multi-repo org scanning, an AI-free refactor planner, and GitHub Actions integration.
 
 ---
 
@@ -96,6 +98,21 @@ deathbed --blame
 
 # Team leaderboard by last-commit author
 deathbed --leaderboard
+
+# Scan an entire org directory of git repos
+deathbed --org /path/to/projects
+
+# Drill into one repo from an org scan
+deathbed --org /path/to/projects --repo myapp
+
+# Generate a prioritised refactor plan (Sprint 1/2/3 roadmap)
+deathbed --plan
+
+# Write a GitHub Actions workflow to .github/workflows/deathbed.yml
+deathbed --init-ci
+
+# Print a shields.io health badge for your README
+deathbed --badge
 ```
 
 ### Options
@@ -113,6 +130,11 @@ deathbed --leaderboard
 | `--since REF` | — | PR mode — restrict to files changed since REF (e.g. `main`) |
 | `--blame` | — | Show last-author column in table and blame info in Most Wanted |
 | `--leaderboard` | — | Team view: authors ranked by files needing support |
+| `--org PATH` | — | Scan a directory of git repos and show an org-wide health table |
+| `--repo NAME` | — | With `--org`: drill into a single repo by name |
+| `--plan` | — | Generate a prioritised Sprint 1/2/3 refactor roadmap |
+| `--init-ci` | — | Write a GitHub Actions workflow to `.github/workflows/deathbed.yml` |
+| `--badge` | — | Print a shields.io Markdown health badge for your README |
 | `--version`, `-V` | — | Show version and exit |
 
 ---
@@ -127,18 +149,19 @@ When you run `deathbed` you get:
 
 ## Metrics explained
 
-Each file receives a **composite health score from 0–100** (higher is healthier), built from eight weighted sub-scores:
+Each file receives a **composite health score from 0–100** (higher is healthier), built from nine weighted sub-scores:
 
 | # | Metric | Weight | What it measures |
 |---|--------|--------|-----------------|
-| 1 | **Size** | 13% | Lines of code — penalises files > 300 / 600 / 1000 lines |
-| 2 | **Age** | 13% | Days since any commit touched this file — flags abandoned code |
-| 3 | **Churn** | 9% | Total number of commits — instability signal |
-| 4 | **Complexity** | 18% | Radon cyclomatic complexity average — Python only; N/A otherwise |
-| 5 | **Authors** | 12% | Unique git authors — many authors = diffused ownership |
-| 6 | **Test coverage** | 9% | Whether a corresponding test file exists anywhere in the repo |
-| 7 | **Recent churn** | 16% | Commits in the last 90 days — hotspot detection |
-| 8 | **Dead code** | 10% | Unused functions/classes/variables detected by vulture (Python only) |
+| 1 | **Size** | 11.7% | Lines of code — penalises files > 300 / 600 / 1000 lines |
+| 2 | **Age** | 11.7% | Days since any commit touched this file — flags abandoned code |
+| 3 | **Churn** | 8.1% | Total number of commits — instability signal |
+| 4 | **Complexity** | 16.2% | Radon cyclomatic complexity average — Python only; N/A otherwise |
+| 5 | **Authors** | 10.8% | Unique git authors — many authors = diffused ownership |
+| 6 | **Test coverage** | 8.1% | Whether a corresponding test file exists and has real assertions |
+| 7 | **Recent churn** | 14.4% | Commits in the last 90 days — hotspot detection |
+| 8 | **Dead code** | 9.0% | Unused functions/classes/variables detected by vulture (Python only) |
+| 9 | **Coupling** | 10.0% | How many other files import this file — high coupling = fragile hub |
 
 ### Health thresholds
 
@@ -156,8 +179,11 @@ deathbed automatically picks the most meaningful diagnosis:
 | Diagnosis | What it means |
 |-----------|--------------|
 | `security smell` | File imports dangerous patterns (pickle, eval, exec, os.system, subprocess shell=True) |
+| `god file` | High coupling (5+ importers) AND already complex AND large — the worst kind of hub |
 | `clone risk` | File is >40% similar to another file — likely a copy-paste |
+| `test theatre` | Has a test file but the test contains zero assertions — false safety net |
 | `dead code cemetery` | High vulture score — lots of unused symbols |
+| `haunted` | 5+ authors AND high complexity AND still churning — too many cooks, no one understands it |
 | `ownership void` | Abandoned for 6+ months and only ever touched by 1 author |
 | `complexity graveyard` | Cyclomatic complexity is extremely high |
 | `legacy ghost` | Not touched in years — likely orphaned |
@@ -174,7 +200,7 @@ Any diagnosis can gain the ` 🔥 heating up` suffix when recent commit activity
 
 ## Trend arrows in the table
 
-The **RECENT** column now shows trend arrows alongside the 90-day commit count:
+The **RECENT** column shows trend arrows alongside the 90-day commit count:
 
 | Arrow | Meaning |
 |-------|---------|
@@ -187,6 +213,14 @@ The **RECENT** column now shows trend arrows alongside the 90-day commit count:
 ## SECURITY ALERTS panel
 
 If any files contain dangerous import or call patterns, a dedicated red **SECURITY ALERTS** panel appears below the main report, listing every affected file and the specific patterns detected.
+
+---
+
+## Coupling
+
+The **COUP** column in the main table shows how many other files import each file.  Files with 5+ importers are flagged as coupling hotspots and counted in the SCAN COMPLETE bar.
+
+A dedicated **MOST COUPLED** panel lists the top 3 most-imported files and shows which files depend on them.  When a file is both heavily coupled *and* complex and large, it receives the `god file` diagnosis.
 
 ---
 
@@ -229,6 +263,78 @@ No external dependencies — one file, works offline.
 
 ---
 
+## Multi-repo org scanning
+
+```bash
+# Scan every git repo in a directory
+deathbed --org /path/to/projects
+
+# Drill into one specific repo
+deathbed --org /path/to/projects --repo myapp
+```
+
+Scans every immediate subdirectory that is a git repository and displays an org-wide health table sorted worst-first:
+
+| Column | Meaning |
+|--------|---------|
+| GRADE | Letter grade A–F for the repo |
+| REPO | Repository directory name |
+| SCORE | Overall repo health score (0–100) |
+| CRITICAL | Number of CRITICAL files |
+| WARNING | Number of WARNING files |
+| FILES | Total files scanned |
+| WORST FILE | The single most unhealthy file |
+| WORST SCORE | Its health score |
+
+A combined **ORG SCORE** is shown at the bottom — the average across all successfully scanned repos.
+
+---
+
+## Refactor planner
+
+```bash
+deathbed --plan
+
+# Export the plan as Markdown
+deathbed --plan --format markdown
+```
+
+Generates a prioritised **Sprint 1 / 2 / 3 roadmap** from the current scan results.  Each item includes:
+- The file and its diagnosis
+- A concrete, per-diagnosis action (e.g. "Split into smaller modules", "Replace pickle with json", "Add assertions to test")
+- Effort estimate: **Small**, **Medium**, or **Large**
+- Current health score
+
+Sprint 1 = CRITICAL files with Small/Medium effort (highest ROI).
+Sprint 2 = remaining CRITICAL + WARNING files.
+Sprint 3 = lower-priority improvements.
+
+---
+
+## GitHub Actions integration
+
+### Auto-setup
+
+```bash
+deathbed --init-ci
+```
+
+Writes a ready-to-use workflow to `.github/workflows/deathbed.yml` that runs `deathbed --ci` on every push and pull request.  Commit and push the file to activate it.
+
+### Health badge
+
+```bash
+deathbed --badge
+```
+
+Prints a shields.io Markdown badge reflecting the current repo score.  Paste it into your README:
+
+```markdown
+![deathbed score](https://img.shields.io/badge/deathbed-82%20B-4caf50?style=flat-square&logo=data:...)
+```
+
+---
+
 ## CI integration
 
 ```bash
@@ -263,7 +369,7 @@ deathbed --since main
 deathbed --since HEAD~5
 ```
 
-Restricts the scan to files that have changed between `<REF>` and `HEAD` (using `git diff --name-only <REF>...HEAD`).  The SCAN COMPLETE panel notes "PR mode — N files changed since <ref>".  Ideal for per-PR health gates in code review.
+Restricts the scan to files that have changed between `<REF>` and `HEAD`.  The SCAN COMPLETE panel notes "PR mode — N files changed since <ref>".  Ideal for per-PR health gates in code review.
 
 ---
 
@@ -283,7 +389,7 @@ Adds a **LAST AUTHOR** column to the table showing who last committed to each fi
 deathbed --leaderboard
 ```
 
-Runs a full blame-enriched scan and groups results by last-commit author, showing:
+Runs a full blame-enriched scan and groups results by last-commit author:
 
 | Column | Meaning |
 |--------|---------|
@@ -300,7 +406,7 @@ Sorted by most at-risk first.  Framed as *who needs support*, not a blame rankin
 
 ## Ignore file (.deathbedignore)
 
-Create a `.deathbedignore` file in your repo root using the same gitignore syntax to permanently exclude files from deathbed analysis:
+Create a `.deathbedignore` file in your repo root using the same gitignore syntax to permanently exclude files from analysis:
 
 ```
 # .deathbedignore
@@ -315,11 +421,11 @@ The SCAN COMPLETE panel reports how many files were ignored.
 
 ## JSON output
 
-`--format json` returns a machine-readable object with all v1.2.0+ fields:
+`--format json` returns a machine-readable object:
 
 ```json
 {
-  "version": "1.3.0",
+  "version": "2.0.0",
   "repo": "/path/to/repo",
   "total": 3,
   "files": [
@@ -327,22 +433,25 @@ The SCAN COMPLETE panel reports how many files were ignored.
       "file": "src/legacy/monster.py",
       "health_score": 22,
       "status": "CRITICAL",
-      "diagnosis": "security smell",
+      "diagnosis": "god file",
       "lines": 1284,
       "days_since_commit": 847,
       "commit_count": 134,
       "author_count": 9,
       "avg_complexity": 18.3,
       "has_test_file": false,
+      "test_has_assertions": false,
       "dead_code_count": 12,
       "has_security_smell": true,
       "security_smells": ["imports pickle", "calls eval()"],
       "clone_similarity": 0.0,
       "clone_of": "",
+      "coupling_count": 7,
+      "importers": ["src/api/handler.py", "src/utils/loader.py"],
       "scores": {
         "size": 0, "age": 5, "churn": 15,
-        "complexity": 2, "authors": 20, "test": 20,
-        "recent_churn": 40, "dead_code": 20
+        "complexity": 2, "authors": 20, "test": 10,
+        "recent_churn": 40, "dead_code": 20, "coupling": 40
       }
     }
   ]
