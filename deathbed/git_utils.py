@@ -173,13 +173,11 @@ def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool, bool]:
     return False, False, True
 
 
-def get_complexity(abs_path: Path) -> Optional[float]:
+def _get_complexity_python(abs_path: Path) -> Optional[float]:
     """
     Run radon cyclomatic complexity on a Python file.
     Returns average complexity or None if not applicable / radon fails.
     """
-    if abs_path.suffix.lower() != ".py":
-        return None
     try:
         from radon.complexity import cc_visit
 
@@ -190,6 +188,93 @@ def get_complexity(abs_path: Path) -> Optional[float]:
         return sum(r.complexity for r in results) / len(results)
     except Exception:
         return None
+
+
+def _get_complexity_js(abs_path: Path) -> Optional[float]:
+    """Estimate JS/TS complexity via control flow keyword counting."""
+    import re
+    try:
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    func_count = max(1, len(re.findall(
+        r'(?:function\s+\w+\s*\(|(?:^|\s)(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|\b(?:async\s+)?function\s*\()',
+        source, re.MULTILINE,
+    )))
+    cc_points = len(re.findall(
+        r'\b(?:if|else\s+if|while|for|switch|case(?=\s)|catch)\b|\?\s*[^:?\n]+:|(?<!\|)\|\|(?!\|)|(?<!&)&&(?!&)',
+        source,
+    ))
+    return max(1.0, (cc_points / func_count) + 1.0)
+
+
+def _get_complexity_go(abs_path: Path) -> Optional[float]:
+    """Run gocyclo on a Go file. Returns average complexity or None if unavailable."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["gocyclo", str(abs_path)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        complexities = []
+        for line in result.stdout.strip().splitlines():
+            parts = line.split()
+            if parts:
+                try:
+                    complexities.append(int(parts[0]))
+                except ValueError:
+                    pass
+        if not complexities:
+            return None
+        return sum(complexities) / len(complexities)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    except Exception:
+        return None
+
+
+def _get_complexity_rust(abs_path: Path) -> Optional[float]:
+    """Count match arms and control flow as a Rust complexity proxy."""
+    import re
+    try:
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return None
+    func_count = max(1, len(re.findall(r'\bfn\s+\w+', source)))
+    cc_points = len(re.findall(
+        r'\b(?:if|else\s+if|while|for\s+\w|loop|match)\b|=>', source
+    ))
+    return max(1.0, cc_points / func_count)
+
+
+def detect_dead_code_rust(abs_path: Path) -> int:
+    """Count #[allow(dead_code)] annotations as a dead code signal."""
+    import re
+    try:
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+        return len(re.findall(r'#\[allow\(dead_code\)\]', source))
+    except Exception:
+        return 0
+
+
+def get_complexity(abs_path: Path) -> Optional[float]:
+    """
+    Return cyclomatic complexity for the given source file.
+    Dispatches to language-specific implementations.
+    Returns None if language not supported or analysis fails.
+    """
+    suffix = abs_path.suffix.lower()
+    if suffix == ".py":
+        return _get_complexity_python(abs_path)
+    if suffix in (".js", ".ts", ".jsx", ".tsx"):
+        return _get_complexity_js(abs_path)
+    if suffix == ".go":
+        return _get_complexity_go(abs_path)
+    if suffix == ".rs":
+        return _get_complexity_rust(abs_path)
+    return None
 
 
 # ── Dangerous pattern detection ───────────────────────────────────────────────

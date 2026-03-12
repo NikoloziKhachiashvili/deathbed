@@ -1,0 +1,33 @@
+name: deathbed code health
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  deathbed:
+    name: Code Health Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deathbed
+        run: pip install deathbed
+
+      - name: Run deathbed (PR mode, CI exit code)
+        id: deathbed
+        run: |
+          deathbed --since main --format markdown > deathbed-report.md || true
+          echo "## 🪦 deathbed Code Health Report" >> $GITHUB_STEP_SUMMARY
+          cat deathbed-report.md >> $GITHUB_STEP_SUMMARY
+          deathbed --since main --ci

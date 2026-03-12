@@ -146,9 +146,20 @@ def analyze_repo(
     # Coupling detection (cross-file: who imports whom)
     _detect_coupling(results, root)
 
-    # Final re-score pass: coupling data is now set, recompute everything
+    # Multi-language dead code detection (JS/TS/Go/Rust)
+    _detect_dead_code_multilang(results, root)
+
+    # Final re-score pass: coupling and dead-code data is now set, recompute everything
     for m in results:
         compute_scores(m)
+
+    # Populate lang_counts in meta if requested
+    if _meta is not None:
+        lang_counts: dict = {}
+        for m in results:
+            ext = Path(m.path).suffix.lower().lstrip(".")
+            lang_counts[ext] = lang_counts.get(ext, 0) + 1
+        _meta["lang_counts"] = lang_counts
 
     # Sort worst-first
     results.sort(key=lambda m: m.composite_score)
@@ -293,6 +304,41 @@ def _detect_clones(results: list[FileMetrics], root: Path) -> None:
     for m in results:
         if m.path in best:
             m.clone_similarity, m.clone_of = best[m.path]
+
+
+def _detect_dead_code_multilang(results: list[FileMetrics], root: Path) -> None:
+    """
+    Supplement vulture dead-code counts with language-specific detection for
+    JS/TS (TODO/FIXME comments as a proxy) and Rust (#[allow(dead_code)]).
+    Only updates files where dead_code_count is currently 0 to avoid overwriting
+    Python/vulture results.
+    """
+    from .git_utils import detect_dead_code_rust
+
+    for m in results:
+        suffix = Path(m.path).suffix.lower()
+        if m.dead_code_count > 0:
+            # Already has a count (e.g. from vulture) — leave it
+            continue
+
+        abs_path = root / m.path
+        if suffix == ".rs":
+            count = detect_dead_code_rust(abs_path)
+            if count > 0:
+                m.dead_code_count = count
+        elif suffix in (".js", ".ts", ".jsx", ".tsx"):
+            # Use TODO/FIXME/HACK/DEAD comment density as a dead-code proxy
+            try:
+                import re
+                source = abs_path.read_text(encoding="utf-8", errors="replace")
+                dead_markers = len(re.findall(
+                    r'//\s*(?:TODO|FIXME|HACK|DEAD|UNUSED|REMOVE|DEPRECATED)',
+                    source, re.IGNORECASE,
+                ))
+                if dead_markers > 0:
+                    m.dead_code_count = dead_markers
+            except Exception:
+                pass
 
 
 def analyze_diff(

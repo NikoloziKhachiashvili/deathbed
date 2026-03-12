@@ -115,6 +115,30 @@ from .display import console, render_error
     default=False,
     help="Print the Markdown badge for the current repo health score.",
 )
+@click.option(
+    "--interactive", "-i",
+    is_flag=True,
+    default=False,
+    help="Launch interactive TUI (requires: pip install deathbed[interactive]).",
+)
+@click.option(
+    "--heatmap",
+    is_flag=True,
+    default=False,
+    help="Render a terminal treemap heatmap of the codebase.",
+)
+@click.option(
+    "--install-hook",
+    is_flag=True,
+    default=False,
+    help="Install a git post-commit regression guard hook.",
+)
+@click.option(
+    "--uninstall-hook",
+    is_flag=True,
+    default=False,
+    help="Remove the deathbed git post-commit hook.",
+)
 @click.version_option(__version__, "--version", "-V", prog_name="deathbed")
 def main(
     path: str,
@@ -133,6 +157,10 @@ def main(
     plan: bool,
     init_ci: bool,
     badge: bool,
+    interactive: bool,
+    heatmap: bool,
+    install_hook: bool,
+    uninstall_hook: bool,
 ) -> None:
     """
     \b
@@ -163,10 +191,22 @@ def main(
       deathbed --plan --format markdown # export roadmap as markdown
       deathbed --init-ci                # create GitHub Actions workflow
       deathbed --badge                  # print shields.io badge markdown
+      deathbed --interactive            # launch interactive TUI
+      deathbed --heatmap                # render terminal treemap heatmap
+      deathbed --install-hook           # install git post-commit guard
+      deathbed --uninstall-hook         # remove git post-commit guard
     """
     repo_path = Path(path).resolve()
 
     # ── Standalone utility modes ──────────────────────────────────────────────
+    if install_hook:
+        _run_install_hook(repo_path)
+        return
+
+    if uninstall_hook:
+        _run_uninstall_hook(repo_path)
+        return
+
     if init_ci:
         _run_init_ci(repo_path)
         return
@@ -193,6 +233,18 @@ def main(
     if plan:
         from .display import run_plan_display
         run_plan_display(repo_path, top, min_score, output_format=output_format)
+        return
+
+    # ── Interactive TUI ───────────────────────────────────────────────────────
+    if interactive:
+        from .tui import run_interactive
+        run_interactive(repo_path, top, min_score, since_ref=since, include_blame=blame)
+        return
+
+    # ── Heatmap ───────────────────────────────────────────────────────────────
+    if heatmap:
+        from .display import run_heatmap_display
+        run_heatmap_display(repo_path, top, min_score)
         return
 
     # ── Mutually exclusive mode dispatch ──────────────────────────────────────
@@ -394,4 +446,67 @@ def _run_badge(repo_path: Path) -> None:
         click.echo(badge)
     except Exception as exc:
         render_error("badge failed", str(exc))
+        sys.exit(1)
+
+
+def _run_install_hook(repo_path: Path) -> None:
+    """Install a post-commit regression guard hook."""
+    from .hook import install_hook
+    from .config import load_config
+    from .display import C_GREEN, C_DIM_GREEN, C_AMBER
+    from rich.panel import Panel
+
+    try:
+        cfg = load_config(repo_path)
+        guard = cfg.get("guard", {})
+        warn_drop  = guard.get("warn_drop",  10)
+        block_drop = guard.get("block_drop", 20)
+        install_hook(repo_path, warn_drop=warn_drop, block_drop=block_drop)
+        console.print(
+            Panel(
+                f"[bold {C_GREEN}]  \u2705  Post-commit hook installed in {repo_path / '.git' / 'hooks' / 'post-commit'}\n\n"
+                f"  Warn on score drop  \u2265 {warn_drop} pts\n"
+                f"  Block on score drop \u2265 {block_drop} pts\n\n"
+                f"  Configure thresholds in .deathbed.toml ([guard] section).\n"
+                f"  Remove with: deathbed --uninstall-hook[/]",
+                title=f"[bold {C_GREEN}]  \U0001f6e1  HOOK INSTALLED  [/]",
+                border_style=C_DIM_GREEN,
+            )
+        )
+    except FileExistsError as exc:
+        render_error("Hook already exists", str(exc))
+        sys.exit(1)
+    except FileNotFoundError as exc:
+        render_error("No .git/hooks directory", str(exc))
+        sys.exit(1)
+    except Exception as exc:
+        render_error("install-hook failed", str(exc))
+        sys.exit(1)
+
+
+def _run_uninstall_hook(repo_path: Path) -> None:
+    """Remove the deathbed post-commit hook."""
+    from .hook import uninstall_hook
+    from .display import C_GREEN, C_DIM_GREEN, C_AMBER
+    from rich.panel import Panel
+
+    try:
+        removed = uninstall_hook(repo_path)
+        if removed:
+            console.print(
+                Panel(
+                    f"[bold {C_GREEN}]  \u2705  Post-commit hook removed.[/]",
+                    title=f"[bold {C_GREEN}]  HOOK UNINSTALLED  [/]",
+                    border_style=C_DIM_GREEN,
+                )
+            )
+        else:
+            console.print(
+                Panel(
+                    f"[bold {C_AMBER}]  No deathbed hook found to remove.[/]",
+                    border_style=C_AMBER,
+                )
+            )
+    except Exception as exc:
+        render_error("uninstall-hook failed", str(exc))
         sys.exit(1)

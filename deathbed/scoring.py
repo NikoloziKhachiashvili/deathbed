@@ -161,10 +161,10 @@ def _test_score(has_test: bool, test_recent: bool, test_has_assertions: bool = T
     return 70
 
 
-def _dead_code_score(count: int, is_python: bool) -> int:
-    """Score based on number of high-confidence unused code items from vulture."""
-    if not is_python:
-        return 75   # neutral for non-Python files
+def _dead_code_score(count: int, is_supported: bool) -> int:
+    """Score based on number of high-confidence unused code items from vulture/dead-code detection."""
+    if not is_supported:
+        return 75   # neutral for unsupported files
     if count == 0:
         return 100
     if count <= 3:
@@ -310,7 +310,9 @@ def _status(score: int) -> str:
 
 def compute_scores(m: FileMetrics) -> FileMetrics:
     """Fill in all score fields and composite, in-place."""
-    is_python = m.path.endswith(".py")
+    from pathlib import Path as _Path
+    _suffix = _Path(m.path).suffix.lower()
+    is_supported = _suffix in (".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs")
 
     m.size_score         = _size_score(m.lines)
     m.age_score          = _age_score(m.days_since_commit)
@@ -320,7 +322,7 @@ def compute_scores(m: FileMetrics) -> FileMetrics:
     m.test_score         = _test_score(m.has_test_file, m.test_file_recent,
                                        m.test_has_assertions)
     m.recent_churn_score = _recent_churn_score(m.recent_churn)
-    m.dead_code_score    = _dead_code_score(m.dead_code_count, is_python)
+    m.dead_code_score    = _dead_code_score(m.dead_code_count, is_supported)
     m.coupling_score     = _coupling_score(m.coupling_count)
 
     # Heating up: recent activity is 2× or more than the prior 90-day window

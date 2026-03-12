@@ -105,10 +105,20 @@ def test_detect_clones_sets_clone_of(tmp_path):
 
 # ── git_utils helpers (no git repo needed) ────────────────────────────────────
 
-def test_get_complexity_non_python(tmp_path):
+def test_get_complexity_js_returns_value(tmp_path):
+    # v3.0.0: JS/TS files now return a complexity estimate (not None)
     from deathbed.git_utils import get_complexity
     f = tmp_path / "index.js"
-    f.write_text("function x() {}\n", encoding="utf-8")
+    f.write_text("function x() { if (a) { return 1; } return 0; }\n", encoding="utf-8")
+    result = get_complexity(f)
+    assert result is not None
+    assert result >= 1.0
+
+def test_get_complexity_truly_unsupported_returns_none(tmp_path):
+    # Truly unsupported file types (e.g. .css) should return None
+    from deathbed.git_utils import get_complexity
+    f = tmp_path / "styles.css"
+    f.write_text("body { color: red; }\n", encoding="utf-8")
     assert get_complexity(f) is None
 
 

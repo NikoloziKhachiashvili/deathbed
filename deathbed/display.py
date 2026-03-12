@@ -232,6 +232,8 @@ def render_summary(
     since_ref: Optional[str] = None,
     since_count: int = 0,
     ignored_count: int = 0,
+    decaying_count: int = 0,
+    lang_counts: Optional[dict] = None,
 ) -> None:
     """Display the post-scan summary stats panel."""
     critical      = sum(1 for m in results if m.status == "CRITICAL")
@@ -242,8 +244,17 @@ def render_summary(
     sec_smell_ct  = sum(1 for m in results if m.has_security_smell)
     coupled_ct    = sum(1 for m in results if m.coupling_count >= 5)
 
+    # Determine number of columns: base 10 + 1 for decay if any + 1 for langs if any
+    n_cols = 10
+    show_decay = decaying_count > 0
+    show_langs = bool(lang_counts)
+    if show_decay:
+        n_cols += 1
+    if show_langs:
+        n_cols += 1
+
     grid = Table.grid(expand=True, padding=(0, 2))
-    for _ in range(10):
+    for _ in range(n_cols):
         grid.add_column(justify="center")
 
     def _stat(icon: str, label: str, value: str, color: str) -> Text:
@@ -259,33 +270,51 @@ def render_summary(
     delta_str = ""
     if repo_score_delta is not None:
         if repo_score_delta > 0:
-            delta_str = f" ▲+{repo_score_delta}"
+            delta_str = f" \u25b2+{repo_score_delta}"
         elif repo_score_delta < 0:
-            delta_str = f" ▼{repo_score_delta}"
+            delta_str = f" \u25bc{repo_score_delta}"
     repo_score_t = Text(justify="center")
-    repo_score_t.append("📊\n", style=f"bold {grade_color}")
+    repo_score_t.append("\U0001f4ca\n", style=f"bold {grade_color}")
     repo_score_t.append(f"{grade} ({repo_score}){delta_str}\n", style=f"bold {grade_color}")
     repo_score_t.append("repo score", style=f"dim {C_GREY}")
 
-    grid.add_row(
-        _stat("🔍", "scanned",    str(total_scanned), C_WHITE),
-        _stat("💀", "critical",   str(critical),      C_SKULL),
-        _stat("⚠️ ", "warning",   str(warning),       C_ORANGE),
-        _stat("🌡 ", "fair",      str(fair),           C_AMBER),
-        _stat("✅", "healthy",    str(healthy),        C_GREEN),
-        _stat("🧟", "dead code",  str(dead_code_ct),   C_ORANGE),
-        _stat("🔐", "sec smells", str(sec_smell_ct),   C_RED1),
-        _stat("🔗", "coupled",    str(coupled_ct),     C_ORANGE),
-        _stat("⏱ ", "duration",  f"{elapsed:.2f}s",   C_GREY),
+    row_cells = [
+        _stat("\U0001f50d", "scanned",    str(total_scanned), C_WHITE),
+        _stat("\U0001f480", "critical",   str(critical),      C_SKULL),
+        _stat("\u26a0\ufe0f ", "warning", str(warning),       C_ORANGE),
+        _stat("\U0001f321 ", "fair",      str(fair),           C_AMBER),
+        _stat("\u2705", "healthy",        str(healthy),        C_GREEN),
+        _stat("\U0001f9df", "dead code",  str(dead_code_ct),   C_ORANGE),
+        _stat("\U0001f510", "sec smells", str(sec_smell_ct),   C_RED1),
+        _stat("\U0001f517", "coupled",    str(coupled_ct),     C_ORANGE),
+        _stat("\u23f1 ", "duration",      f"{elapsed:.2f}s",   C_GREY),
         repo_score_t,
-    )
+    ]
+
+    if show_decay:
+        decay_t = Text(justify="center")
+        decay_t.append("\U0001f4c9\n", style=f"bold {C_SKULL}")
+        decay_t.append(f"{decaying_count}\n", style=f"bold {C_SKULL}")
+        decay_t.append("decaying", style=f"dim {C_GREY}")
+        row_cells.append(decay_t)
+
+    if show_langs and lang_counts:
+        top_langs = sorted(lang_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+        langs_str = " ".join(f"{ext}:{n}" for ext, n in top_langs)
+        langs_t = Text(justify="center")
+        langs_t.append("\U0001f4c1\n", style=f"bold {C_AMBER}")
+        langs_t.append(f"{langs_str}\n", style=f"bold {C_AMBER}")
+        langs_t.append("languages", style=f"dim {C_GREY}")
+        row_cells.append(langs_t)
+
+    grid.add_row(*row_cells)
 
     subtitles: list[str] = []
     if since_ref:
-        subtitles.append(f"PR mode — {since_count} file(s) changed since {since_ref}")
+        subtitles.append(f"PR mode \u2014 {since_count} file(s) changed since {since_ref}")
     if ignored_count > 0:
         subtitles.append(f"{ignored_count} file(s) ignored via .deathbedignore")
-    panel_subtitle = f"[dim {C_GREY}]{' · '.join(subtitles)}[/]" if subtitles else None
+    panel_subtitle = f"[dim {C_GREY}]{' \u00b7 '.join(subtitles)}[/]" if subtitles else None
 
     panel = Panel(
         Padding(grid, (1, 0)),
@@ -298,7 +327,7 @@ def render_summary(
     console.print()
 
 
-def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
+def render_table(results: list[FileMetrics], show_blame: bool = False, decay_predictions: Optional[dict] = None) -> None:
     """Render the main beautiful results table."""
     if not results:
         console.print(
@@ -309,8 +338,9 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
         )
         return
 
-    has_trend    = any(m.score_delta is not None for m in results)
-    has_coupling = any(m.coupling_count > 0 for m in results)
+    has_trend     = any(m.score_delta is not None for m in results)
+    has_coupling  = any(m.coupling_count > 0 for m in results)
+    has_decay_col = bool(decay_predictions)
 
     table = Table(
         box=box.SIMPLE_HEAVY,
@@ -338,6 +368,8 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
     table.add_column("CPLX",    justify="right",  width=5,  no_wrap=True)
     if has_coupling:
         table.add_column("COUP",   justify="right",  width=5,  no_wrap=True)
+    if has_decay_col:
+        table.add_column("ETA",    justify="right",  width=7,  no_wrap=True)
     if show_blame:
         table.add_column("LAST AUTHOR", justify="left", width=14, no_wrap=True)
     table.add_column("DIAGNOSIS", justify="left", ratio=1,  no_wrap=True)
@@ -451,6 +483,16 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
             coup_t = Text(str(m.coupling_count), style=coup_color, justify="right")
             row_cells.append(coup_t)
 
+        # ETA cell (decay prediction)
+        if has_decay_col:
+            pred = decay_predictions.get(m.path) if decay_predictions else None
+            if pred is not None and pred.eta_days is not None:
+                eta_color = C_SKULL if pred.eta_days <= 7 else C_ORANGE if pred.eta_days <= 14 else C_AMBER
+                eta_t = Text(f"{pred.eta_days}d", style=eta_color, justify="right")
+            else:
+                eta_t = Text("—", style=C_DIM, justify="right")
+            row_cells.append(eta_t)
+
         # LAST AUTHOR cell (blame mode)
         if show_blame:
             author_display = _truncate(m.last_author, 12) if m.last_author else "—"
@@ -477,21 +519,29 @@ def render_footer(
     results: list[FileMetrics],
     repo_root: Path,
     show_blame: bool = False,
+    decay_predictions: Optional[dict] = None,
 ) -> None:
     """Render the Most Wanted, Most Coupled, Quick Wins, Tips, and Security Alerts panels."""
     if not results:
         return
 
-    _render_most_wanted(results[0], show_blame=show_blame)
+    worst_decay = None
+    if decay_predictions:
+        # Find if the worst file has a decay prediction
+        worst_decay = decay_predictions.get(results[0].path)
+
+    _render_most_wanted(results[0], show_blame=show_blame, decay=worst_decay)
     _render_most_coupled(results)
     _render_quick_wins(results)
     _render_tips(results)
     _render_security_alerts(results)
+    if decay_predictions:
+        _render_decay_panel(decay_predictions)
 
 
 # ── Footer helpers ─────────────────────────────────────────────────────────────
 
-def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
+def _render_most_wanted(worst: FileMetrics, show_blame: bool = False, decay: object = None) -> None:
     """Detailed breakdown of the single worst file."""
     score_table = Table.grid(expand=True, padding=(0, 1))
     score_table.add_column(justify="left",  width=13)
@@ -570,7 +620,19 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
             style=f"dim {C_GREY}",
         )
         if msg_display:
-            header.append(f" — \"{escape(msg_display)}\"", style=f"dim {C_GREY}")
+            header.append(f" \u2014 \"{escape(msg_display)}\"", style=f"dim {C_GREY}")
+
+    if decay is not None and getattr(decay, "eta_days", None) is not None:
+        eta = decay.eta_days
+        target = decay.target_threshold
+        slope = decay.slope_per_week
+        eta_color = C_SKULL if eta <= 7 else C_ORANGE if eta <= 14 else C_AMBER
+        header.append("\n", style="")
+        header.append(
+            f"  \U0001f4c9 decay alert: score will cross {target} in ~{eta} day(s) "
+            f"(slope: {slope:.1f} pts/week)",
+            style=f"bold {eta_color}",
+        )
 
     outer = Table.grid(expand=True, padding=(0, 0))
     outer.add_column()
@@ -807,6 +869,45 @@ def _render_security_alerts(results: list[FileMetrics]) -> None:
         content,
         title=f"[bold {C_RED1}]  🔐  SECURITY ALERTS  [/]",
         subtitle=f"[dim {C_GREY}]{len(security_files)} file(s) with dangerous patterns[/]",
+        border_style=C_RED5,
+        box=box.HEAVY,
+        padding=(0, 0),
+    )
+    console.print(panel)
+    console.print()
+
+
+def _render_decay_panel(decay_predictions: dict) -> None:
+    """Show a decay forecast panel for files trending toward critical thresholds."""
+    if not decay_predictions:
+        return
+
+    # Sort by eta_days ascending (most urgent first)
+    sorted_preds = sorted(
+        [p for p in decay_predictions.values() if p.eta_days is not None],
+        key=lambda p: (p.eta_days or 9999),
+    )[:10]
+
+    if not sorted_preds:
+        return
+
+    content = Text()
+    for pred in sorted_preds:
+        eta_color = C_SKULL if pred.eta_days <= 7 else C_ORANGE if pred.eta_days <= 14 else C_AMBER
+        content.append("  \U0001f4c9  ", style=f"bold {eta_color}")
+        content.append(f"{_truncate(pred.file_path, 38):<40}", style=C_WHITE)
+        content.append(f"  score: {pred.current_score:3d}  ", style=f"dim {C_GREY}")
+        content.append(f"ETA: ~{pred.eta_days}d  ", style=f"bold {eta_color}")
+        content.append(
+            f"\u2192 will cross {pred.target_threshold} ({pred.slope_per_week:.1f} pts/week)",
+            style=f"italic {C_AMBER}",
+        )
+        content.append("\n")
+
+    panel = Panel(
+        content,
+        title=f"[bold {C_SKULL}]  \U0001f4c9  DECAY FORECAST  [/]",
+        subtitle=f"[dim {C_GREY}]{len(sorted_preds)} file(s) trending toward critical thresholds[/]",
         border_style=C_RED5,
         box=box.HEAVY,
         padding=(0, 0),
@@ -1196,6 +1297,28 @@ def run_display(
 
         ignored_count = meta.get("ignored_count", 0)
         since_count   = meta.get("since_count", 0)
+        lang_counts   = meta.get("lang_counts", {})
+
+        # Decay prediction (requires historical data)
+        decay_predictions: dict = {}
+        try:
+            from .decay import predict_decay
+            from .config import load_config
+            cfg = load_config(repo_root)
+            decay_cfg = cfg.get("decay", {})
+            thresh_cfg = cfg.get("thresholds", {})
+            decay_predictions = predict_decay(
+                repo_root,
+                results,
+                min_scans=decay_cfg.get("min_scans", 3),
+                horizon_days=decay_cfg.get("horizon_days", 30),
+                warning_threshold=thresh_cfg.get("warning", 65),
+                critical_threshold=thresh_cfg.get("critical", 40),
+            )
+        except Exception:
+            decay_predictions = {}
+
+        decaying_count = len(decay_predictions)
 
         if ci_mode:
             _run_ci(results, total_scanned)
@@ -1208,16 +1331,19 @@ def run_display(
             since_ref=since_ref,
             since_count=since_count,
             ignored_count=ignored_count,
+            decaying_count=decaying_count,
+            lang_counts=lang_counts if lang_counts else None,
         )
-        render_table(results, show_blame=include_blame)
+        render_table(results, show_blame=include_blame, decay_predictions=decay_predictions or None)
 
         non_healthy = [m for m in results if m.status != "HEALTHY"]
         if non_healthy:
-            render_footer(non_healthy, repo_path, show_blame=include_blame)
+            render_footer(non_healthy, repo_path, show_blame=include_blame,
+                          decay_predictions=decay_predictions or None)
         else:
             console.print(
                 Panel(
-                    f"[bold {C_GREEN}]  ✅  All files look healthy. Great work![/]",
+                    f"[bold {C_GREEN}]  \u2705  All files look healthy. Great work![/]",
                     border_style=C_DIM_GREEN,
                 )
             )
@@ -1393,7 +1519,7 @@ def run_org_display(
             import json
             import click
             payload = {
-                "version": "2.0.0",
+                "version": "3.0.0",
                 "org": str(org_path),
                 "repos": [
                     {
@@ -1459,4 +1585,41 @@ def run_plan_display(
         sys.exit(1)
     except Exception as exc:
         render_error("Plan generation failed", str(exc))
+        sys.exit(1)
+
+
+def run_heatmap_display(
+    repo_path: Path,
+    top: int,
+    min_score: Optional[int],
+) -> None:
+    """Analyse the repo and render the terminal treemap heatmap."""
+    from .analyzer import analyze_repo
+    from .heatmap import render_heatmap
+
+    render_header()
+
+    try:
+        with make_progress() as progress:
+            task = progress.add_task(
+                "Scanning for heatmap",
+                total=None,
+                color=C_CRIMSON,
+                current_file="",
+            )
+            results = analyze_repo(repo_path, top=0, min_score=min_score)
+
+        if not results:
+            render_error("No files found", "No analysable source files found.")
+            return
+
+        # For heatmap, sort by lines descending so largest files are first
+        results_by_size = sorted(results, key=lambda m: m.lines, reverse=True)
+        render_heatmap(results_by_size)
+
+    except git.InvalidGitRepositoryError:
+        render_error("Not a git repository", str(repo_path))
+        sys.exit(1)
+    except Exception as exc:
+        render_error("Heatmap failed", str(exc))
         sys.exit(1)

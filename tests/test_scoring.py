@@ -151,12 +151,13 @@ def test_test_score_recent_test():
 
 # ── Dead code score ───────────────────────────────────────────────────────────
 
-def test_dead_code_score_non_python():
-    assert _dead_code_score(0, is_python=False) == 75
-    assert _dead_code_score(10, is_python=False) == 75
+def test_dead_code_score_non_supported():
+    # is_supported=False → neutral score of 75 (unsupported file types)
+    assert _dead_code_score(0, is_supported=False) == 75
+    assert _dead_code_score(10, is_supported=False) == 75
 
 def test_dead_code_score_zero():
-    assert _dead_code_score(0, is_python=True) == 100
+    assert _dead_code_score(0, is_supported=True) == 100
 
 @pytest.mark.parametrize("count,expected", [
     (1,  85),
@@ -167,8 +168,8 @@ def test_dead_code_score_zero():
     (15, 35),
     (16, max(0, 20 - (16 - 15) // 2)),
 ])
-def test_dead_code_score_python(count, expected):
-    assert _dead_code_score(count, is_python=True) == expected
+def test_dead_code_score_supported(count, expected):
+    assert _dead_code_score(count, is_supported=True) == expected
 
 
 # ── Status ────────────────────────────────────────────────────────────────────
@@ -323,9 +324,17 @@ def test_diagnosis_churn_monster():
 
 
 def test_compute_scores_dead_code_non_python():
+    # .js is now a supported language (is_supported=True), so dead_code is scored
     m = _make(path="foo.js", avg_complexity=None, dead_code_count=10)
     compute_scores(m)
-    assert m.dead_code_score == 75   # neutral for non-Python
+    # .js is supported → dead_code_count=10 → score should be < 75
+    assert m.dead_code_score < 75
+
+def test_compute_scores_dead_code_unsupported_lang():
+    # .css is not a supported language → neutral score of 75
+    m = _make(path="foo.css", avg_complexity=None, dead_code_count=10)
+    compute_scores(m)
+    assert m.dead_code_score == 75  # neutral for unsupported file types
 
 
 # ── letter_grade ──────────────────────────────────────────────────────────────
@@ -445,6 +454,6 @@ def test_diagnosis_god_file_requires_all_conditions():
     assert m.diagnosis != "god file"
 
 
-def test_version_is_2():
+def test_version_is_3():
     from deathbed import __version__
-    assert __version__ == "2.0.0"
+    assert __version__ == "3.0.0"
