@@ -19,7 +19,7 @@ class FileMetrics:
     recent_churn: int = 0   # commits in last 90 days
     prev_churn: int = 0     # commits in prior 90 days (days 91-180)
 
-    # New v1.2.0 fields
+    # v1.2.0 fields
     dead_code_count: int = 0          # unused symbols found by vulture
     has_security_smell: bool = False   # dangerous import patterns found
     security_smells: list = field(default_factory=list)  # list of smell descriptions
@@ -35,6 +35,7 @@ class FileMetrics:
     test_score: int = 100
     recent_churn_score: int = 100
     dead_code_score: int = 100
+    coupling_score: int = 100   # v2.0.0
 
     # Derived flags
     heating_up: bool = False
@@ -46,25 +47,31 @@ class FileMetrics:
     score_delta: Optional[int] = None   # vs last history scan (positive = improved)
     sparkline: str = ""            # up-to-5-char sparkline from history (▁▂▃▄▅▆▇█)
 
+    # v2.0.0 fields
+    coupling_count: int = 0                      # how many other files import this
+    importers: list = field(default_factory=list) # file paths that import this (max 5)
+    test_has_assertions: bool = True             # False → "test theatre" diagnosis
+
     # Composite
     composite_score: int = 100
     diagnosis: str = "healthy"
     status: str = "HEALTHY"
 
 
-# ── Weights ───────────────────────────────────────────────────────────────────
+# ── Weights (v2.0.0 — coupling at 10%, others reduced proportionally) ─────────
 
 WEIGHTS: dict[str, float] = {
-    "size":         0.13,
-    "age":          0.13,
-    "churn":        0.09,
-    "complexity":   0.18,
-    "authors":      0.12,
-    "test":         0.09,
-    "recent_churn": 0.16,
-    "dead_code":    0.10,
+    "size":         0.117,
+    "age":          0.117,
+    "churn":        0.081,
+    "complexity":   0.162,
+    "authors":      0.108,
+    "test":         0.081,
+    "recent_churn": 0.144,
+    "dead_code":    0.090,
+    "coupling":     0.100,
 }
-# weights sum = 1.00
+# weights sum ≈ 1.00  (117+117+81+162+108+81+144+90+100 = 1000)
 
 
 # ── Individual scoring functions ───────────────────────────────────────────────
@@ -144,9 +151,11 @@ def _author_score(authors: int) -> int:
     return max(0, 20 - (authors - 10) * 2)
 
 
-def _test_score(has_test: bool, test_recent: bool) -> int:
+def _test_score(has_test: bool, test_recent: bool, test_has_assertions: bool = True) -> int:
     if not has_test:
         return 20
+    if not test_has_assertions:
+        return 10  # test theatre: test file exists but has zero assertions
     if test_recent:
         return 100
     return 70
@@ -167,6 +176,21 @@ def _dead_code_score(count: int, is_python: bool) -> int:
     return max(0, 20 - (count - 15) // 2)
 
 
+def _coupling_score(count: int) -> int:
+    """Score based on how many other files depend on (import) this file."""
+    if count <= 3:
+        return 100
+    if count <= 6:
+        return 80
+    if count <= 10:
+        return 60
+    if count <= 15:
+        return 40
+    if count <= 20:
+        return 20
+    return max(0, 10 - (count - 20) // 5)
+
+
 # ── Diagnosis ─────────────────────────────────────────────────────────────────
 
 def _diagnose(m: FileMetrics) -> str:
@@ -181,19 +205,40 @@ def _diagnose(m: FileMetrics) -> str:
     worst = min(scores, key=scores.get)  # type: ignore[arg-type]
     suffix = " 🔥 heating up" if m.heating_up else ""
 
-    # Security smell is always surfaced (safety concern, highest priority)
+    # 1. Security smell — always surfaced first (safety concern)
     if m.has_security_smell:
         return "security smell" + suffix
 
-    # Clone risk
+    # 2. God file — highly coupled + complex + large
+    if (
+        m.coupling_count >= 5
+        and m.complexity_score < 45
+        and m.size_score < 45
+    ):
+        return "god file" + suffix
+
+    # 3. Clone risk
     if m.clone_similarity >= 0.4:
         return "clone risk" + suffix
 
-    # Dead code cemetery
+    # 4. Test theatre — test file exists but has zero assertions
+    if m.has_test_file and not m.test_has_assertions:
+        return "test theatre" + suffix
+
+    # 5. Dead code cemetery
     if m.dead_code_score < 40:
         return "dead code cemetery" + suffix
 
-    # Ownership void: abandoned by a single author
+    # 6. Haunted — 5+ authors, still complex, still churning
+    if (
+        m.author_count >= 5
+        and m.avg_complexity is not None
+        and m.avg_complexity > 10
+        and (m.churn_trend == "up" or m.recent_churn > 10)
+    ):
+        return "haunted" + suffix
+
+    # 7. Ownership void: abandoned by a single author
     if m.days_since_commit >= 180 and m.author_count <= 1 and m.commit_count > 0:
         if m.age_score < 45:
             return "ownership void" + suffix
@@ -267,14 +312,16 @@ def compute_scores(m: FileMetrics) -> FileMetrics:
     """Fill in all score fields and composite, in-place."""
     is_python = m.path.endswith(".py")
 
-    m.size_score       = _size_score(m.lines)
-    m.age_score        = _age_score(m.days_since_commit)
-    m.churn_score      = _churn_score(m.commit_count)
-    m.complexity_score = _complexity_score(m.avg_complexity)
-    m.author_score     = _author_score(m.author_count)
-    m.test_score       = _test_score(m.has_test_file, m.test_file_recent)
+    m.size_score         = _size_score(m.lines)
+    m.age_score          = _age_score(m.days_since_commit)
+    m.churn_score        = _churn_score(m.commit_count)
+    m.complexity_score   = _complexity_score(m.avg_complexity)
+    m.author_score       = _author_score(m.author_count)
+    m.test_score         = _test_score(m.has_test_file, m.test_file_recent,
+                                       m.test_has_assertions)
     m.recent_churn_score = _recent_churn_score(m.recent_churn)
-    m.dead_code_score  = _dead_code_score(m.dead_code_count, is_python)
+    m.dead_code_score    = _dead_code_score(m.dead_code_count, is_python)
+    m.coupling_score     = _coupling_score(m.coupling_count)
 
     # Heating up: recent activity is 2× or more than the prior 90-day window
     m.heating_up = (
@@ -299,14 +346,15 @@ def compute_scores(m: FileMetrics) -> FileMetrics:
         m.churn_trend = "stable"
 
     m.composite_score = int(
-        m.size_score         * WEIGHTS["size"]
-        + m.age_score        * WEIGHTS["age"]
-        + m.churn_score      * WEIGHTS["churn"]
-        + m.complexity_score * WEIGHTS["complexity"]
-        + m.author_score     * WEIGHTS["authors"]
-        + m.test_score       * WEIGHTS["test"]
+        m.size_score          * WEIGHTS["size"]
+        + m.age_score         * WEIGHTS["age"]
+        + m.churn_score       * WEIGHTS["churn"]
+        + m.complexity_score  * WEIGHTS["complexity"]
+        + m.author_score      * WEIGHTS["authors"]
+        + m.test_score        * WEIGHTS["test"]
         + m.recent_churn_score * WEIGHTS["recent_churn"]
-        + m.dead_code_score  * WEIGHTS["dead_code"]
+        + m.dead_code_score   * WEIGHTS["dead_code"]
+        + m.coupling_score    * WEIGHTS["coupling"]
     )
 
     m.status    = _status(m.composite_score)

@@ -102,10 +102,32 @@ def get_ref_timestamp(repo: git.Repo, ref: str) -> int:
         return int(time.time())
 
 
-def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool]:
+def _check_test_assertions(fpath: Path) -> bool:
+    """
+    Return True if the file contains at least one assert statement.
+    Non-Python test files always return True (assume they have assertions).
+    """
+    if fpath.suffix.lower() != ".py":
+        return True
+    try:
+        source = fpath.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assert):
+                return True
+        return False
+    except Exception:
+        return True  # parse error → assume assertions exist
+
+
+def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool, bool]:
     """
     Look for a corresponding test file anywhere in the repo.
-    Returns (has_test, is_recent) where is_recent means modified within 90 days.
+    Returns (has_test, is_recent, has_assertions) where:
+      - has_test:        a matching test file was found
+      - is_recent:       the test file was modified within 90 days
+      - has_assertions:  the test file contains at least one assert statement
+                         (always True when has_test is False)
     """
     stem = rel_path.stem
     candidates = [
@@ -137,7 +159,7 @@ def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool]:
                         is_recent = (now - mtime) < ninety_days
                     except OSError:
                         is_recent = False
-                    return True, is_recent
+                    return True, is_recent, _check_test_assertions(fpath)
             # check if file is in a test dir and has the stem in the name
             if dir_p.name in test_dirs and stem.lower() in lower:
                 fpath = dir_p / fname
@@ -146,9 +168,9 @@ def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool]:
                     is_recent = (now - mtime) < ninety_days
                 except OSError:
                     is_recent = False
-                return True, is_recent
+                return True, is_recent, _check_test_assertions(fpath)
 
-    return False, False
+    return False, False, True
 
 
 def get_complexity(abs_path: Path) -> Optional[float]:

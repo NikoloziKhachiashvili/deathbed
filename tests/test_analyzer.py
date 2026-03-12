@@ -139,7 +139,7 @@ def test_find_test_file_found(tmp_path):
     tests.mkdir()
     (tests / "test_utils.py").write_text("assert True\n", encoding="utf-8")
 
-    has_test, _ = find_test_file(tmp_path, Path("src/utils.py"))
+    has_test, _, _assertions = find_test_file(tmp_path, Path("src/utils.py"))
     assert has_test is True
 
 
@@ -147,6 +147,38 @@ def test_find_test_file_not_found(tmp_path):
     from deathbed.git_utils import find_test_file
     (tmp_path / "orphan.py").write_text("x = 1\n", encoding="utf-8")
 
-    has_test, is_recent = find_test_file(tmp_path, Path("orphan.py"))
+    has_test, is_recent, has_assertions = find_test_file(tmp_path, Path("orphan.py"))
     assert has_test is False
     assert is_recent is False
+    assert has_assertions is True  # default when no test found
+
+
+def test_find_test_file_assertions_check(tmp_path):
+    from deathbed.git_utils import find_test_file
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "utils.py").write_text("x = 1\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    # Test file with no assertions
+    (tests / "test_utils.py").write_text("def test_nothing():\n    pass\n", encoding="utf-8")
+
+    has_test, _, has_assertions = find_test_file(tmp_path, Path("src/utils.py"))
+    assert has_test is True
+    assert has_assertions is False
+
+
+def test_find_test_file_with_assertions(tmp_path):
+    from deathbed.git_utils import find_test_file
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "calc.py").write_text("def add(a, b): return a + b\n", encoding="utf-8")
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_calc.py").write_text("def test_add():\n    assert 1 + 1 == 2\n", encoding="utf-8")
+
+    has_test, _, has_assertions = find_test_file(tmp_path, Path("src/calc.py"))
+    assert has_test is True
+    assert has_assertions is True

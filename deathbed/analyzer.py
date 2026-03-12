@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import re as _re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -24,6 +26,17 @@ from .git_utils import (
     run_vulture,
 )
 from .scoring import FileMetrics, compute_scores
+
+# ── Regex patterns for cross-language import extraction ───────────────────────
+
+_JS_IMPORT_RE = _re.compile(
+    r"""(?:import\s+.*?\s+from\s+|require\s*\(\s*)['"]([^'"]+)['"]""",
+    _re.MULTILINE,
+)
+_GENERIC_IMPORT_RE = _re.compile(
+    r"""import\s+["']?([^\s"';(]+)["']?""",
+    _re.MULTILINE,
+)
 
 
 @dataclass
@@ -55,11 +68,10 @@ def analyze_repo(
         min_score:     Only return files with composite_score < min_score.
         quiet:         Suppress internal prints.
         on_progress:   Callback(rel_path, current_index, total) called per file.
-        since_ref:     If given, restrict analysis to files changed since this ref
-                       (PR mode).
+        since_ref:     If given, restrict analysis to files changed since this ref.
         include_blame: If True, populate last_author / last_commit_msg per file.
-        _meta:         Optional dict that gets populated with repo_root,
-                       ignored_count, and since_count for the caller.
+        _meta:         Optional dict populated with repo_root, ignored_count,
+                       and since_count for the caller.
 
     Raises:
         git.InvalidGitRepositoryError: if path is not inside a git repo.
@@ -91,12 +103,12 @@ def analyze_repo(
         rel_str  = rel_path.as_posix()
 
         try:
-            lines                        = count_lines(abs_path)
-            days, commits, authors, recent_churn, prev_churn = get_file_history(repo, rel_str)
-            avg_cx                       = get_complexity(abs_path)
-            has_test, test_recent        = find_test_file(root, rel_path)
-            dead_count                   = run_vulture(abs_path)
-            sec_smells                   = detect_security_smells(abs_path)
+            lines                                  = count_lines(abs_path)
+            days, commits, authors, recent, prev   = get_file_history(repo, rel_str)
+            avg_cx                                 = get_complexity(abs_path)
+            has_test, test_recent, test_has_assert = find_test_file(root, rel_path)
+            dead_count                             = run_vulture(abs_path)
+            sec_smells                             = detect_security_smells(abs_path)
 
             m = FileMetrics(
                 path=rel_str,
@@ -107,8 +119,9 @@ def analyze_repo(
                 avg_complexity=avg_cx,
                 has_test_file=has_test,
                 test_file_recent=test_recent,
-                recent_churn=recent_churn,
-                prev_churn=prev_churn,
+                test_has_assertions=test_has_assert,
+                recent_churn=recent,
+                prev_churn=prev,
                 dead_code_count=dead_count,
                 has_security_smell=bool(sec_smells),
                 security_smells=sec_smells,
@@ -127,13 +140,15 @@ def analyze_repo(
     if on_progress:
         on_progress("", total, total)
 
-    # Clone detection (after all files are scored)
+    # Clone detection (cross-file, O(n²) capped at 200 files)
     _detect_clones(results, root)
 
-    # Re-diagnose after clone data is set (clone_similarity may change diagnosis)
-    from .scoring import _diagnose  # noqa: PLC0415
+    # Coupling detection (cross-file: who imports whom)
+    _detect_coupling(results, root)
+
+    # Final re-score pass: coupling data is now set, recompute everything
     for m in results:
-        m.diagnosis = _diagnose(m)
+        compute_scores(m)
 
     # Sort worst-first
     results.sort(key=lambda m: m.composite_score)
@@ -149,6 +164,86 @@ def analyze_repo(
     return results
 
 
+def _extract_imports(abs_path: Path) -> set[str]:
+    """
+    Extract the set of imported module/file stems from a source file.
+    Returns stems (no extension) that could match local file paths.
+    """
+    try:
+        source = abs_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return set()
+
+    stems: set[str] = set()
+    suffix = abs_path.suffix.lower()
+
+    if suffix == ".py":
+        try:
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        parts = alias.name.split(".")
+                        stems.add(parts[-1])
+                        if len(parts) > 1:
+                            stems.add(parts[0])
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        parts = node.module.split(".")
+                        stems.add(parts[-1])
+                        if len(parts) > 1:
+                            stems.add(parts[0])
+        except Exception:
+            pass
+
+    elif suffix in (".js", ".ts", ".jsx", ".tsx"):
+        for match in _JS_IMPORT_RE.finditer(source):
+            path_str = match.group(1)
+            stem = Path(path_str).stem
+            if stem and not stem.startswith("@"):
+                stems.add(stem)
+
+    else:
+        for match in _GENERIC_IMPORT_RE.finditer(source):
+            token = match.group(1)
+            stem = Path(token).stem
+            if stem:
+                stems.add(stem)
+
+    return stems
+
+
+def _detect_coupling(results: list[FileMetrics], root: Path) -> None:
+    """
+    For each file, count how many other analyzed files import it.
+    Populates coupling_count and importers on each FileMetrics in-place.
+    """
+    # Build map from stem → [rel_paths] (handles name collisions)
+    stem_to_paths: dict[str, list[str]] = {}
+    for m in results:
+        stem = Path(m.path).stem
+        stem_to_paths.setdefault(stem, []).append(m.path)
+
+    # For each file, extract what it imports
+    file_imports: dict[str, set[str]] = {}
+    for m in results:
+        file_imports[m.path] = _extract_imports(root / m.path)
+
+    # Reverse: for each file, which other files import it?
+    importers_map: dict[str, set[str]] = {m.path: set() for m in results}
+    for importer_path, imported_stems in file_imports.items():
+        for stem in imported_stems:
+            for target_path in stem_to_paths.get(stem, []):
+                if target_path != importer_path:
+                    importers_map[target_path].add(importer_path)
+
+    # Update FileMetrics
+    for m in results:
+        importer_set = importers_map.get(m.path, set())
+        m.coupling_count = len(importer_set)
+        m.importers = sorted(importer_set)[:5]
+
+
 def _detect_clones(results: list[FileMetrics], root: Path) -> None:
     """
     Compute pairwise similarity between files and populate clone_similarity /
@@ -157,7 +252,6 @@ def _detect_clones(results: list[FileMetrics], root: Path) -> None:
     Uses difflib line-level comparison, capped at 200 files to stay O(n²) fast.
     Only sets clone_similarity when the ratio exceeds 0.40 (40%).
     """
-    # Read and normalise file contents (strip blank lines + comments)
     contents: dict[str, list[str]] = {}
     for m in results:
         abs_path = root / m.path
@@ -173,17 +267,16 @@ def _detect_clones(results: list[FileMetrics], root: Path) -> None:
             pass
 
     paths = list(contents.keys())
-    n = min(len(paths), 200)   # cap to keep it fast
+    n = min(len(paths), 200)
     paths = paths[:n]
 
-    best: dict[str, tuple[float, str]] = {}  # path -> (max_sim, other_path)
+    best: dict[str, tuple[float, str]] = {}
 
     for i in range(len(paths)):
         for j in range(i + 1, len(paths)):
             a, b = paths[i], paths[j]
             la, lb = contents[a], contents[b]
 
-            # Quick ratio is an upper bound; skip if clearly below threshold
             matcher = SequenceMatcher(None, la, lb, autojunk=False)
             if matcher.quick_ratio() < 0.35:
                 continue
@@ -216,8 +309,8 @@ def analyze_diff(
     Historical results use the same file list but cap git history at the ref's
     commit timestamp.
     """
-    repo     = open_repo(repo_path)
-    root     = get_repo_root(repo)
+    repo      = open_repo(repo_path)
+    root      = get_repo_root(repo)
     before_ts = get_ref_timestamp(repo, ref)
 
     files, _ = get_analyzable_files(root)
@@ -234,11 +327,11 @@ def analyze_diff(
         rel_str  = rel_path.as_posix()
 
         try:
-            lines                        = count_lines(abs_path)
-            avg_cx                       = get_complexity(abs_path)
-            has_test, test_recent        = find_test_file(root, rel_path)
-            dead_count                   = run_vulture(abs_path)
-            sec_smells                   = detect_security_smells(abs_path)
+            lines                                  = count_lines(abs_path)
+            avg_cx                                 = get_complexity(abs_path)
+            has_test, test_recent, test_has_assert = find_test_file(root, rel_path)
+            dead_count                             = run_vulture(abs_path)
+            sec_smells                             = detect_security_smells(abs_path)
 
             # Current (HEAD) history
             days, commits, authors, recent, prev = get_file_history(repo, rel_str)
@@ -246,7 +339,8 @@ def analyze_diff(
                 path=rel_str, lines=lines,
                 days_since_commit=days, commit_count=commits, author_count=authors,
                 avg_complexity=avg_cx, has_test_file=has_test,
-                test_file_recent=test_recent, recent_churn=recent, prev_churn=prev,
+                test_file_recent=test_recent, test_has_assertions=test_has_assert,
+                recent_churn=recent, prev_churn=prev,
                 dead_code_count=dead_count,
                 has_security_smell=bool(sec_smells), security_smells=sec_smells,
             )
@@ -259,9 +353,11 @@ def analyze_diff(
             )
             m_hist = FileMetrics(
                 path=rel_str, lines=lines,
-                days_since_commit=h_days, commit_count=h_commits, author_count=h_authors,
-                avg_complexity=avg_cx, has_test_file=has_test,
-                test_file_recent=test_recent, recent_churn=h_recent, prev_churn=h_prev,
+                days_since_commit=h_days, commit_count=h_commits,
+                author_count=h_authors, avg_complexity=avg_cx,
+                has_test_file=has_test, test_file_recent=test_recent,
+                test_has_assertions=test_has_assert,
+                recent_churn=h_recent, prev_churn=h_prev,
                 dead_code_count=dead_count,
                 has_security_smell=bool(sec_smells), security_smells=sec_smells,
             )
@@ -274,11 +370,11 @@ def analyze_diff(
     if on_progress:
         on_progress("", total, total)
 
-    # Clone detection on current state
+    # Clone + coupling detection on current state
     _detect_clones(current_results, root)
-    from .scoring import _diagnose  # noqa: PLC0415
+    _detect_coupling(current_results, root)
     for m in current_results:
-        m.diagnosis = _diagnose(m)
+        compute_scores(m)
 
     # Sort & filter current results
     current_results.sort(key=lambda m: m.composite_score)

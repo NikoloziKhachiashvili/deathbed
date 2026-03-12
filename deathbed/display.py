@@ -45,9 +45,6 @@ from rich.text import Text
 from .scoring import FileMetrics, letter_grade
 
 # ── Global console ─────────────────────────────────────────────────────────────
-# legacy_windows=False forces Rich to use ANSI/VT sequences on Windows 10+
-# instead of the old win32 API which cannot render Unicode box-drawing chars.
-
 console = Console(highlight=False, legacy_windows=False)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
@@ -68,7 +65,6 @@ C_WHITE     = "rgb(230,230,230)"
 C_DIM       = "rgb(80,80,80)"
 C_SKULL     = "rgb(255,69,58)"
 
-# Row background colours (on dark terminal)
 ROW_CRITICAL = Style(color="rgb(255,100,100)", bold=True)
 ROW_WARNING  = Style(color="rgb(255,180,50)",  bold=True)
 ROW_FAIR     = Style(color="rgb(230,215,80)")
@@ -171,6 +167,28 @@ def render_header() -> None:
     console.print()
 
 
+def render_org_header() -> None:
+    """Print the DEATHBED logo with an ORG SCAN subtitle."""
+    console.print()
+    logo = _build_logo()
+    console.print(Align(logo, align="center"))
+    console.print()
+    org_rule = Rule(
+        title=f"[bold {C_RED1}]  🏢  O R G   S C A N  [/]",
+        style=C_RED5,
+        characters="═",
+    )
+    console.print(org_rule)
+    console.print()
+    tagline = Text(
+        "scanning your entire organisation — one repo at a time.",
+        style=f"italic dim {C_GREY}",
+        justify="center",
+    )
+    console.print(Align(tagline, align="center"))
+    console.print()
+
+
 def render_error(title: str, message: str) -> None:
     """Display a styled error panel — no raw tracebacks ever."""
     panel = Panel(
@@ -222,9 +240,10 @@ def render_summary(
     healthy       = sum(1 for m in results if m.status == "HEALTHY")
     dead_code_ct  = sum(1 for m in results if m.dead_code_count > 0)
     sec_smell_ct  = sum(1 for m in results if m.has_security_smell)
+    coupled_ct    = sum(1 for m in results if m.coupling_count >= 5)
 
     grid = Table.grid(expand=True, padding=(0, 2))
-    for _ in range(9):
+    for _ in range(10):
         grid.add_column(justify="center")
 
     def _stat(icon: str, label: str, value: str, color: str) -> Text:
@@ -256,11 +275,11 @@ def render_summary(
         _stat("✅", "healthy",    str(healthy),        C_GREEN),
         _stat("🧟", "dead code",  str(dead_code_ct),   C_ORANGE),
         _stat("🔐", "sec smells", str(sec_smell_ct),   C_RED1),
+        _stat("🔗", "coupled",    str(coupled_ct),     C_ORANGE),
         _stat("⏱ ", "duration",  f"{elapsed:.2f}s",   C_GREY),
         repo_score_t,
     )
 
-    # Build subtitle for PR mode / ignored files
     subtitles: list[str] = []
     if since_ref:
         subtitles.append(f"PR mode — {since_count} file(s) changed since {since_ref}")
@@ -290,8 +309,8 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
         )
         return
 
-    # Detect whether any file has trend history
-    has_trend = any(m.score_delta is not None for m in results)
+    has_trend    = any(m.score_delta is not None for m in results)
+    has_coupling = any(m.coupling_count > 0 for m in results)
 
     table = Table(
         box=box.SIMPLE_HEAVY,
@@ -317,6 +336,8 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
     table.add_column("RECENT",  justify="right",  width=7,  no_wrap=True)
     table.add_column("AUTH",    justify="right",  width=4,  no_wrap=True)
     table.add_column("CPLX",    justify="right",  width=5,  no_wrap=True)
+    if has_coupling:
+        table.add_column("COUP",   justify="right",  width=5,  no_wrap=True)
     if show_blame:
         table.add_column("LAST AUTHOR", justify="left", width=14, no_wrap=True)
     table.add_column("DIAGNOSIS", justify="left", ratio=1,  no_wrap=True)
@@ -336,8 +357,9 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
         display_path = _truncate(m.path, 60)
         file_t = Text(escape(display_path), style=style, no_wrap=True)
 
-        # TREND cell (history delta)
         row_cells: list = [health_t, file_t]
+
+        # TREND cell
         if has_trend:
             if m.score_delta is not None:
                 if m.score_delta > 0:
@@ -380,7 +402,7 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
         churn_t = Text(str(m.commit_count), style=churn_color, justify="right")
         row_cells.append(churn_t)
 
-        # RECENT CHURN cell with churn-trend arrow ▲▼━
+        # RECENT CHURN cell
         recent_color = (
             C_SKULL  if m.recent_churn > 30 else
             C_ORANGE if m.recent_churn > 15 else
@@ -418,6 +440,17 @@ def render_table(results: list[FileMetrics], show_blame: bool = False) -> None:
         cx_t = Text(cx_val, style=cx_color, justify="right")
         row_cells.append(cx_t)
 
+        # COUPLING cell
+        if has_coupling:
+            coup_color = (
+                C_SKULL  if m.coupling_count > 15 else
+                C_ORANGE if m.coupling_count > 10 else
+                C_AMBER  if m.coupling_count > 5  else
+                C_GREEN
+            )
+            coup_t = Text(str(m.coupling_count), style=coup_color, justify="right")
+            row_cells.append(coup_t)
+
         # LAST AUTHOR cell (blame mode)
         if show_blame:
             author_display = _truncate(m.last_author, 12) if m.last_author else "—"
@@ -445,11 +478,12 @@ def render_footer(
     repo_root: Path,
     show_blame: bool = False,
 ) -> None:
-    """Render the Most Wanted, Quick Wins, Tips, and Security Alerts panels."""
+    """Render the Most Wanted, Most Coupled, Quick Wins, Tips, and Security Alerts panels."""
     if not results:
         return
 
     _render_most_wanted(results[0], show_blame=show_blame)
+    _render_most_coupled(results)
     _render_quick_wins(results)
     _render_tips(results)
     _render_security_alerts(results)
@@ -492,10 +526,10 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
     _row("complexity",worst.complexity_score,    "Complexity",   cx_display)
     _row("authors",   worst.author_score,        "Authors",      str(worst.author_count))
     _row("tests",     worst.test_score,          "Test file",    test_display)
+    _row("coupling",  worst.coupling_score,      "Dependents",   str(worst.coupling_count))
 
     # Dead code row (only meaningful for Python files)
-    is_python = worst.path.endswith(".py")
-    if is_python:
+    if worst.path.endswith(".py"):
         dead_display = (
             f"{worst.dead_code_count} unused symbol(s)"
             if worst.dead_code_count > 0
@@ -507,7 +541,6 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
     header = Text(justify="left")
     header.append(f"  {escape(worst.path)}", style=f"bold {C_WHITE}")
 
-    # Sparkline (if history available)
     if worst.sparkline:
         header.append("   ", style="")
         header.append(worst.sparkline, style=f"bold {_score_color(worst.composite_score)}")
@@ -519,7 +552,16 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
         style=f"bold {_score_color(worst.composite_score)}",
     )
 
-    # Blame info (if available and show_blame requested)
+    # Importers line (if coupling data available)
+    if worst.importers:
+        header.append("\n", style="")
+        importer_list = ", ".join(_truncate(p, 25) for p in worst.importers[:3])
+        extra = f" +{len(worst.importers) - 3} more" if len(worst.importers) > 3 else ""
+        header.append(
+            f"  imported by: {escape(importer_list)}{extra}",
+            style=f"dim {C_ORANGE}",
+        )
+
     if show_blame and worst.last_author:
         header.append("\n", style="")
         msg_display = _truncate(worst.last_commit_msg, 60) if worst.last_commit_msg else ""
@@ -547,6 +589,41 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False) -> None:
     console.print()
 
 
+def _render_most_coupled(results: list[FileMetrics]) -> None:
+    """Show the top 3 most depended-upon files in the codebase."""
+    sorted_by_coupling = sorted(results, key=lambda m: m.coupling_count, reverse=True)
+    top3 = [m for m in sorted_by_coupling[:3] if m.coupling_count > 0]
+    if not top3:
+        return
+
+    content = Text()
+    for m in top3:
+        coup_color = (
+            C_SKULL  if m.coupling_count > 15 else
+            C_ORANGE if m.coupling_count > 10 else
+            C_AMBER  if m.coupling_count > 5  else
+            C_GREEN
+        )
+        content.append("  🔗  ", style=f"bold {coup_color}")
+        content.append(f"{_truncate(m.path, 38):<40}", style=C_WHITE)
+        content.append(f"  {m.coupling_count} dependent(s)  ", style=f"bold {coup_color}")
+        if m.importers:
+            importer_list = ", ".join(_truncate(p, 20) for p in m.importers[:3])
+            content.append(f"← {importer_list}", style=f"italic dim {C_GREY}")
+        content.append("\n")
+
+    panel = Panel(
+        content,
+        title=f"[bold {C_ORANGE}]  🔗  MOST COUPLED  [/]",
+        subtitle=f"[dim {C_GREY}]most depended-upon files — highest change-blast radius[/]",
+        border_style=C_ORANGE,
+        box=box.HEAVY,
+        padding=(0, 0),
+    )
+    console.print(panel)
+    console.print()
+
+
 def _render_quick_wins(results: list[FileMetrics]) -> None:
     """Show files that are almost healthy — small fixes, big gains."""
     wins = [
@@ -560,7 +637,6 @@ def _render_quick_wins(results: list[FileMetrics]) -> None:
 
     content = Text()
     for m in wins:
-        # If security smell, surface that first
         if m.has_security_smell:
             smells_short = ", ".join(m.security_smells[:2])
             suggestion = f"fix security smell ({smells_short})"
@@ -574,6 +650,7 @@ def _render_quick_wins(results: list[FileMetrics]) -> None:
                 "authors":      m.author_score,
                 "test":         m.test_score,
                 "dead_code":    m.dead_code_score,
+                "coupling":     m.coupling_score,
             }
             worst_metric = min(individual, key=individual.get)  # type: ignore[arg-type]
             suggestions = {
@@ -585,6 +662,7 @@ def _render_quick_wins(results: list[FileMetrics]) -> None:
                 "authors":      "assign a clear owner",
                 "test":         "add a test file",
                 "dead_code":    "remove dead code (vulture detected unused symbols)",
+                "coupling":     "reduce coupling — extract an interface or abstraction layer",
             }
             suggestion = suggestions.get(worst_metric, "review it")
 
@@ -615,7 +693,8 @@ def _render_tips(results: list[FileMetrics]) -> None:
 
     tally: dict[str, int] = {
         "size": 0, "age": 0, "churn": 0,
-        "recent_churn": 0, "complexity": 0, "authors": 0, "test": 0, "dead_code": 0,
+        "recent_churn": 0, "complexity": 0, "authors": 0,
+        "test": 0, "dead_code": 0, "coupling": 0,
     }
     for m in results:
         scores = {
@@ -623,6 +702,7 @@ def _render_tips(results: list[FileMetrics]) -> None:
             "recent_churn": m.recent_churn_score,
             "complexity": m.complexity_score, "authors": m.author_score,
             "test": m.test_score, "dead_code": m.dead_code_score,
+            "coupling": m.coupling_score,
         }
         worst = min(scores, key=scores.get)  # type: ignore[arg-type]
         tally[worst] = tally.get(worst, 0) + 1
@@ -668,9 +748,13 @@ def _render_tips(results: list[FileMetrics]) -> None:
             "Unused functions and classes add cognitive load and hide real bugs. "
             "Run `vulture <file>` on each and remove anything above 80% confidence."
         ),
+        "coupling": (
+            "🔗  {n} files are highly coupled — many other modules depend on them. "
+            "Any change ripples across the codebase. "
+            "Introduce interfaces or abstract base classes to reduce direct coupling."
+        ),
     }
 
-    # Show top 3 dominant patterns
     sorted_patterns = sorted(
         [(k, v) for k, v in tally.items() if v > 0],
         key=lambda x: x[1],
@@ -731,6 +815,157 @@ def _render_security_alerts(results: list[FileMetrics]) -> None:
     console.print()
 
 
+# ── Refactor plan renderer ─────────────────────────────────────────────────────
+
+def render_plan(plan: dict, repo_root: Path, output_format: str = "rich") -> None:
+    """Render the refactoring roadmap — rich terminal view or markdown."""
+    if output_format == "markdown":
+        import click
+        from .planner import format_plan_markdown
+        click.echo(format_plan_markdown(plan, repo_root))
+        return
+    _render_plan_rich(plan)
+
+
+def _render_plan_rich(plan: dict) -> None:
+    """Render the plan as styled amber Rich panels with sprint dividers."""
+    sprint_configs = [
+        ("sprint1", "🔴  SPRINT 1 — DO THIS WEEK",    "CRITICAL",  C_SKULL),
+        ("sprint2", "🟡  SPRINT 2 — DO THIS MONTH",   "WARNING",   C_ORANGE),
+        ("sprint3", "🟢  SPRINT 3 — DO THIS QUARTER", "FAIR",      C_AMBER),
+    ]
+
+    all_empty = all(not plan.get(k, []) for k, _, _, _ in sprint_configs)
+    if all_empty:
+        console.print(
+            Panel(
+                f"[bold {C_GREEN}]  ✅  No refactoring needed — all files are healthy![/]",
+                title=f"[bold {C_AMBER}]  📋  REFACTOR PLAN  [/]",
+                border_style=C_AMBER,
+                box=box.HEAVY,
+            )
+        )
+        return
+
+    for sprint_key, sprint_title, sprint_status, sprint_color in sprint_configs:
+        items = plan.get(sprint_key, [])
+        if not items:
+            continue
+
+        content = Text()
+        for item in items:
+            effort_color = {
+                "Small": C_GREEN, "Medium": C_AMBER, "Large": C_SKULL
+            }.get(item["effort"], C_GREY)
+
+            content.append("\n  ●  ", style=f"bold {sprint_color}")
+            content.append(f"{_truncate(item['file'], 42):<44}", style=C_WHITE)
+            content.append(f"score: {item['score']:2d}  ", style=f"dim {C_GREY}")
+            content.append(f"[{item['effort']}]", style=f"bold {effort_color}")
+            content.append(f"\n     {escape(item['action'])}\n", style=f"italic {C_AMBER}")
+
+        panel = Panel(
+            content,
+            title=f"[bold {C_AMBER}]  {sprint_title}  [/]",
+            subtitle=f"[dim {C_GREY}]{len(items)} file(s) · {sprint_status}[/]",
+            border_style=C_AMBER,
+            box=box.HEAVY,
+            padding=(0, 0),
+        )
+        console.print(panel)
+        console.print()
+
+
+# ── Org-wide report renderer ───────────────────────────────────────────────────
+
+def render_org_report(repos: list, org_path: Path) -> None:
+    """Render the org-wide health table, sorted worst-first."""
+    from .org import org_combined_score
+    from .scoring import letter_grade
+
+    if not repos:
+        console.print(Panel(
+            f"[bold {C_AMBER}]  No git repositories found in {escape(str(org_path))}[/]",
+            border_style=C_AMBER,
+        ))
+        return
+
+    org_score = org_combined_score(repos)
+    org_grade = letter_grade(org_score)
+    grade_color = _score_color(org_score)
+
+    # Org score summary
+    org_summary = Text(justify="center")
+    org_summary.append("ORG SCORE  ", style=f"dim {C_GREY}")
+    org_summary.append(f"{org_grade} ({org_score})", style=f"bold {grade_color}")
+    org_summary.append(f"  ·  {len(repos)} repositories scanned", style=f"dim {C_GREY}")
+    console.print(
+        Panel(
+            Padding(org_summary, (0, 2)),
+            border_style=grade_color,
+            box=box.HEAVY,
+        )
+    )
+    console.print()
+
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        border_style=C_RED6,
+        header_style=f"bold {C_CRIMSON}",
+        show_edge=True,
+        expand=True,
+        title=f"[bold {C_CRIMSON}]ORG HEALTH REPORT[/]",
+        title_style=f"bold {C_CRIMSON}",
+        caption=f"[dim {C_GREY}]{len(repos)} repos · sorted worst-first[/]",
+        caption_style=f"dim {C_GREY}",
+        padding=(0, 1),
+    )
+
+    table.add_column("GRADE",    justify="center", width=6,  no_wrap=True)
+    table.add_column("REPO",     justify="left",   ratio=2,  no_wrap=True)
+    table.add_column("SCORE",    justify="center", width=7,  no_wrap=True)
+    table.add_column("CRITICAL", justify="right",  width=8,  no_wrap=True)
+    table.add_column("WARNING",  justify="right",  width=7,  no_wrap=True)
+    table.add_column("FILES",    justify="right",  width=5,  no_wrap=True)
+    table.add_column("WORST FILE",       justify="left",  ratio=2, no_wrap=True)
+    table.add_column("WORST SCORE",      justify="center", width=11, no_wrap=True)
+
+    for r in repos:
+        if r.error:
+            table.add_row(
+                Text("?", style=C_DIM),
+                Text(escape(r.name), style=C_GREY),
+                Text("—",   style=C_DIM, justify="center"),
+                Text("—",   style=C_DIM, justify="right"),
+                Text("—",   style=C_DIM, justify="right"),
+                Text("—",   style=C_DIM, justify="right"),
+                Text(f"error: {_truncate(r.error, 40)}", style=f"italic {C_GREY}"),
+                Text("—",   style=C_DIM),
+            )
+            continue
+
+        repo_color = _score_color(r.repo_score)
+        crit_color = C_SKULL  if r.critical_count > 0 else C_DIM_GREEN
+        warn_color = C_ORANGE if r.warning_count  > 0 else C_DIM
+
+        table.add_row(
+            Text(r.grade,             style=f"bold {repo_color}", justify="center"),
+            Text(escape(r.name),      style=f"bold {C_WHITE}"),
+            Text(str(r.repo_score),   style=repo_color, justify="center"),
+            Text(str(r.critical_count), style=crit_color, justify="right"),
+            Text(str(r.warning_count),  style=warn_color, justify="right"),
+            Text(str(r.file_count),   style=C_GREY, justify="right"),
+            Text(_truncate(r.worst_file, 40) if r.worst_file else "—",
+                 style=C_GREY),
+            Text(str(r.worst_score) if r.worst_file else "—",
+                 style=_score_color(r.worst_score) if r.worst_file else C_DIM,
+                 justify="center"),
+        )
+
+    console.print(table)
+    console.print()
+
+
 # ── Diff renderer ──────────────────────────────────────────────────────────────
 
 def render_diff(
@@ -748,7 +983,6 @@ def render_diff(
             delta = m.composite_score - h.composite_score
             entries.append((m, h, delta))
 
-    # Sort: most worsened first (smallest delta first)
     entries.sort(key=lambda x: x[2])
 
     table = Table(
@@ -761,11 +995,11 @@ def render_diff(
         caption=f"[dim {C_GREY}]▼ worsened · ▲ improved · ━ unchanged[/]",
         padding=(0, 1),
     )
-    table.add_column("FILE",        justify="left",   ratio=2, no_wrap=True)
-    table.add_column("BEFORE",      justify="center", width=8, no_wrap=True)
-    table.add_column("NOW",         justify="center", width=8, no_wrap=True)
-    table.add_column("CHANGE",      justify="center", width=8, no_wrap=True)
-    table.add_column("STATUS",      justify="left",   width=9, no_wrap=True)
+    table.add_column("FILE",   justify="left",   ratio=2, no_wrap=True)
+    table.add_column("BEFORE", justify="center", width=8, no_wrap=True)
+    table.add_column("NOW",    justify="center", width=8, no_wrap=True)
+    table.add_column("CHANGE", justify="center", width=8, no_wrap=True)
+    table.add_column("STATUS", justify="left",   width=9, no_wrap=True)
 
     improved = worsened = unchanged = 0
 
@@ -785,7 +1019,6 @@ def render_diff(
         now_t    = Text(str(m.composite_score), style=_score_color(m.composite_score),  justify="center")
         change_t = Text(f"{arrow} {abs(delta):+d}" if delta != 0 else "━  0", style=arrow_color, justify="center")
 
-        # Status change label
         if m.status != h.status:
             status_t = Text(f"{h.status}→{m.status}", style=_row_style(m.status))
         else:
@@ -796,7 +1029,6 @@ def render_diff(
     console.print(table)
     console.print()
 
-    # Summary line
     summary = Text(justify="center")
     summary.append(f"▲ {improved} improved  ", style=C_GREEN)
     summary.append(f"▼ {worsened} worsened  ", style=C_SKULL)
@@ -811,7 +1043,7 @@ def render_markdown(results: list[FileMetrics]) -> None:
     """Output a GitHub-Flavored Markdown table to stdout."""
     import click
 
-    headers = ["FILE", "SCORE", "STATUS", "LINES", "LAST TOUCHED", "CHURN", "AUTHORS", "DIAGNOSIS"]
+    headers = ["FILE", "SCORE", "STATUS", "LINES", "LAST TOUCHED", "CHURN", "AUTHORS", "COUPLING", "DIAGNOSIS"]
     click.echo("| " + " | ".join(headers) + " |")
     click.echo("| " + " | ".join(["---"] * len(headers)) + " |")
     for m in results:
@@ -823,6 +1055,7 @@ def render_markdown(results: list[FileMetrics]) -> None:
             _human_days(m.days_since_commit),
             str(m.commit_count),
             str(m.author_count),
+            str(m.coupling_count),
             m.diagnosis,
         ]
         click.echo("| " + " | ".join(row) + " |")
@@ -905,7 +1138,6 @@ def run_display(
     if not ci_mode:
         render_header()
 
-    # Pre-resolve repo root for history keying (graceful fallback to repo_path)
     repo_root = repo_path
     try:
         from .git_utils import open_repo as _or, get_repo_root as _grr
@@ -957,7 +1189,6 @@ def run_display(
             )
             return
 
-        # History enrichment (sets score_delta + sparkline per file)
         repo_score       = compute_repo_score(results)
         enrich_with_history(results, repo_root)
         repo_score_delta = get_repo_score_delta(repo_root, repo_score)
@@ -1134,4 +1365,98 @@ def run_leaderboard_display(
         sys.exit(1)
     except Exception as exc:
         render_error("Leaderboard failed", str(exc))
+        sys.exit(1)
+
+
+def run_org_display(
+    org_path: Path,
+    top: int,
+    min_score: Optional[int],
+    output_format: str = "rich",
+) -> None:
+    """Scan all repos in org_path and show the org-wide health report."""
+    from .org import analyze_org
+
+    render_org_header()
+
+    try:
+        with make_progress() as progress:
+            progress.add_task(
+                "Scanning repositories",
+                total=None,
+                color=C_CRIMSON,
+                current_file="",
+            )
+            repos = analyze_org(org_path)
+
+        if output_format == "json":
+            import json
+            import click
+            payload = {
+                "version": "2.0.0",
+                "org": str(org_path),
+                "repos": [
+                    {
+                        "name":           r.name,
+                        "path":           str(r.path),
+                        "repo_score":     r.repo_score,
+                        "grade":          r.grade,
+                        "critical_count": r.critical_count,
+                        "warning_count":  r.warning_count,
+                        "file_count":     r.file_count,
+                        "worst_file":     r.worst_file,
+                        "worst_score":    r.worst_score,
+                        "error":          r.error,
+                    }
+                    for r in repos
+                ],
+            }
+            click.echo(json.dumps(payload, indent=2))
+            return
+
+        render_org_report(repos, org_path)
+
+    except Exception as exc:
+        render_error("Org scan failed", str(exc))
+        sys.exit(1)
+
+
+def run_plan_display(
+    repo_path: Path,
+    top: int,
+    min_score: Optional[int],
+    output_format: str = "rich",
+) -> None:
+    """Analyse the repo and render the refactoring plan."""
+    from .analyzer import analyze_repo
+    from .planner import generate_plan
+    from .git_utils import open_repo as _or, get_repo_root as _grr
+
+    repo_root = repo_path
+    try:
+        repo_root = _grr(_or(repo_path))
+    except Exception:
+        pass
+
+    if output_format != "markdown":
+        render_header()
+
+    try:
+        with make_progress() as progress:
+            task = progress.add_task(
+                "Analysing for refactor plan",
+                total=None,
+                color=C_CRIMSON,
+                current_file="",
+            )
+            results = analyze_repo(repo_path, top=0, min_score=min_score)
+
+        plan = generate_plan(results, repo_root)
+        render_plan(plan, repo_root, output_format=output_format)
+
+    except git.InvalidGitRepositoryError:
+        render_error("Not a git repository", str(repo_path))
+        sys.exit(1)
+    except Exception as exc:
+        render_error("Plan generation failed", str(exc))
         sys.exit(1)

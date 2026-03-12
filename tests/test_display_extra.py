@@ -183,7 +183,7 @@ def test_analyze_repo_mocked(monkeypatch, tmp_path):
         patch("deathbed.analyzer.get_repo_root", return_value=tmp_path),
         patch("deathbed.analyzer.get_file_history", return_value=(10, 3, 1, 1, 0)),
         patch("deathbed.analyzer.get_complexity", return_value=2.0),
-        patch("deathbed.analyzer.find_test_file", return_value=(False, False)),
+        patch("deathbed.analyzer.find_test_file", return_value=(False, False, True)),
         patch("deathbed.analyzer.run_vulture", return_value=0),
         patch("deathbed.analyzer.detect_security_smells", return_value=[]),
     ):
@@ -203,7 +203,7 @@ def test_analyze_repo_respects_top(monkeypatch, tmp_path):
         patch("deathbed.analyzer.get_repo_root", return_value=tmp_path),
         patch("deathbed.analyzer.get_file_history", return_value=(10, 3, 1, 1, 0)),
         patch("deathbed.analyzer.get_complexity", return_value=2.0),
-        patch("deathbed.analyzer.find_test_file", return_value=(False, False)),
+        patch("deathbed.analyzer.find_test_file", return_value=(False, False, True)),
         patch("deathbed.analyzer.run_vulture", return_value=0),
         patch("deathbed.analyzer.detect_security_smells", return_value=[]),
     ):
@@ -266,7 +266,7 @@ def test_analyze_diff_mocked(tmp_path):
         patch("deathbed.analyzer.get_ref_timestamp", return_value=1000000),
         patch("deathbed.analyzer.get_file_history", return_value=(10, 3, 1, 1, 0)),
         patch("deathbed.analyzer.get_complexity", return_value=2.0),
-        patch("deathbed.analyzer.find_test_file", return_value=(False, False)),
+        patch("deathbed.analyzer.find_test_file", return_value=(False, False, True)),
         patch("deathbed.analyzer.run_vulture", return_value=0),
         patch("deathbed.analyzer.detect_security_smells", return_value=[]),
     ):
@@ -287,7 +287,7 @@ def test_analyze_diff_with_security_smell(tmp_path):
         patch("deathbed.analyzer.get_ref_timestamp", return_value=1000000),
         patch("deathbed.analyzer.get_file_history", return_value=(10, 3, 1, 1, 0)),
         patch("deathbed.analyzer.get_complexity", return_value=2.0),
-        patch("deathbed.analyzer.find_test_file", return_value=(False, False)),
+        patch("deathbed.analyzer.find_test_file", return_value=(False, False, True)),
         patch("deathbed.analyzer.run_vulture", return_value=0),
         patch("deathbed.analyzer.detect_security_smells",
               return_value=["imports pickle"]),
@@ -360,7 +360,7 @@ def test_analyze_repo_skips_failed_files(monkeypatch, tmp_path):
         patch("deathbed.analyzer.get_repo_root", return_value=tmp_path),
         patch("deathbed.analyzer.get_file_history", side_effect=flaky_history),
         patch("deathbed.analyzer.get_complexity", return_value=2.0),
-        patch("deathbed.analyzer.find_test_file", return_value=(False, False)),
+        patch("deathbed.analyzer.find_test_file", return_value=(False, False, True)),
         patch("deathbed.analyzer.run_vulture", return_value=0),
         patch("deathbed.analyzer.detect_security_smells", return_value=[]),
     ):

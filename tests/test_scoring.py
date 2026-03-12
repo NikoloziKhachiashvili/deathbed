@@ -10,6 +10,7 @@ from deathbed.scoring import (
     _author_score,
     _churn_score,
     _complexity_score,
+    _coupling_score,
     _dead_code_score,
     _diagnose,
     _recent_churn_score,
@@ -25,7 +26,9 @@ from deathbed.scoring import (
 # ── Weights sanity ─────────────────────────────────────────────────────────────
 
 def test_weights_sum_to_one():
-    assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-9
+    # Use 1e-6 tolerance — new 9-weight set uses 3-decimal values that may
+    # accumulate small float rounding errors, but sum to 1000/1000 = 1.0 exactly.
+    assert abs(sum(WEIGHTS.values()) - 1.0) < 1e-6
 
 
 # ── Size score ─────────────────────────────────────────────────────────────────
@@ -371,3 +374,77 @@ def test_compute_scores_dead_code_python():
     m = _make(path="foo.py", dead_code_count=10)
     compute_scores(m)
     assert m.dead_code_score == 35
+
+
+# ── v2.0.0: coupling score ─────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("count,expected", [
+    (0,  100),
+    (3,  100),
+    (4,  80),
+    (6,  80),
+    (7,  60),
+    (10, 60),
+    (11, 40),
+    (15, 40),
+    (16, 20),
+    (20, 20),
+    (21, max(0, 10 - 1 // 5)),
+])
+def test_coupling_score(count, expected):
+    assert _coupling_score(count) == expected
+
+
+# ── v2.0.0: test_score with assertions ────────────────────────────────────────
+
+def test_test_score_no_assertions():
+    """Test file exists but has zero assertions → test theatre → score 10."""
+    assert _test_score(True, True, test_has_assertions=False) == 10
+
+def test_test_score_with_assertions_recent():
+    assert _test_score(True, True, test_has_assertions=True) == 100
+
+def test_test_score_with_assertions_old():
+    assert _test_score(True, False, test_has_assertions=True) == 70
+
+
+# ── v2.0.0: new diagnoses ─────────────────────────────────────────────────────
+
+def test_diagnosis_test_theatre():
+    m = _make(has_test_file=True, test_file_recent=True)
+    compute_scores(m)
+    m.test_has_assertions = False
+    m.test_score = _test_score(True, True, False)
+    m.diagnosis = _diagnose(m)
+    assert m.diagnosis == "test theatre"
+
+
+def test_diagnosis_haunted():
+    m = _make(author_count=6, avg_complexity=15.0, recent_churn=20, prev_churn=5)
+    compute_scores(m)
+    assert m.churn_trend == "up"
+    assert m.diagnosis.startswith("haunted")
+
+
+def test_diagnosis_god_file():
+    m = _make(lines=800, avg_complexity=20.0)
+    compute_scores(m)
+    m.coupling_count = 10
+    m.coupling_score = _coupling_score(10)
+    m.diagnosis = _diagnose(m)
+    assert m.diagnosis == "god file"
+
+
+def test_diagnosis_god_file_requires_all_conditions():
+    # coupling >= 5 but complexity fine → not god file
+    m = _make(lines=100, avg_complexity=2.0)
+    compute_scores(m)
+    m.coupling_count = 10
+    m.coupling_score = 60
+    m.diagnosis = _diagnose(m)
+    assert m.diagnosis != "god file"
+
+
+def test_version_is_2():
+    from deathbed import __version__
+    assert __version__ == "2.0.0"

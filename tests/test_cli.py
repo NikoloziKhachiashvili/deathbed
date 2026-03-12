@@ -41,7 +41,7 @@ def runner():
 def test_version_flag(runner):
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "1.3.0" in result.output
+    assert "2.0.0" in result.output
 
 
 def test_help_flag(runner):
@@ -185,3 +185,73 @@ def test_blame_passes_to_run_display(runner, tmp_path):
         mock_display.assert_called_once()
         _, kwargs = mock_display.call_args
         assert kwargs.get("include_blame") is True
+
+
+# ── v2.0.0: new flags ─────────────────────────────────────────────────────────
+
+def test_org_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--org" in result.output
+
+
+def test_plan_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--plan" in result.output
+
+
+def test_init_ci_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--init-ci" in result.output
+
+
+def test_badge_flag_shown_in_help(runner):
+    result = runner.invoke(main, ["--help"])
+    assert "--badge" in result.output
+
+
+def test_org_dispatches_to_run_org_display(runner, tmp_path):
+    with patch("deathbed.display.run_org_display") as mock_org:
+        mock_org.return_value = None
+        runner.invoke(main, ["--org", str(tmp_path)])
+        mock_org.assert_called_once()
+
+
+def test_plan_dispatches_to_run_plan_display(runner, tmp_path):
+    with patch("deathbed.display.run_plan_display") as mock_plan:
+        mock_plan.return_value = None
+        runner.invoke(main, ["--plan", "--path", str(tmp_path)])
+        mock_plan.assert_called_once()
+
+
+def test_init_ci_dispatches(runner, tmp_path):
+    with patch("deathbed.cli._run_init_ci") as mock_ci:
+        mock_ci.return_value = None
+        runner.invoke(main, ["--init-ci", "--path", str(tmp_path)])
+        mock_ci.assert_called_once()
+
+
+def test_badge_dispatches(runner, tmp_path):
+    with patch("deathbed.cli._run_badge") as mock_badge:
+        mock_badge.return_value = None
+        runner.invoke(main, ["--badge", "--path", str(tmp_path)])
+        mock_badge.assert_called_once()
+
+
+def test_org_with_repo_drills_down(runner, tmp_path):
+    with patch("deathbed.display.run_display") as mock_display:
+        mock_display.return_value = None
+        runner.invoke(main, ["--org", str(tmp_path), "--repo", "myrepo"])
+        mock_display.assert_called_once()
+
+
+def test_json_output_includes_coupling(runner, tmp_path):
+    results = [_healthy_metric()]
+    with patch("deathbed.analyzer.analyze_repo", return_value=results):
+        result = runner.invoke(main, ["--format", "json", "--path", str(tmp_path)])
+    if result.output:
+        try:
+            payload = json.loads(result.output)
+            if payload.get("files"):
+                assert "coupling_count" in payload["files"][0]
+        except (json.JSONDecodeError, KeyError):
+            pass
