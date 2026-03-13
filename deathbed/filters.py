@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from collections.abc import Iterator  # noqa: F401 — kept for potential external use
 from pathlib import Path
-from typing import Iterator
 
 import pathspec
+
+log = logging.getLogger(__name__)
+
+__all__ = ["get_analyzable_files", "ANALYZABLE_EXTENSIONS"]
 
 # Extensions we want to analyze
 ANALYZABLE_EXTENSIONS = {
@@ -38,8 +43,8 @@ def _load_deathbedignore(repo_path: Path) -> pathspec.PathSpec:
     if deathbedignore.is_file():
         try:
             patterns = deathbedignore.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("Could not read .deathbedignore: %s", exc)
     return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
 
@@ -50,8 +55,8 @@ def _load_gitignore(repo_path: Path) -> pathspec.PathSpec:
     if gitignore.is_file():
         try:
             patterns = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("Could not read .gitignore: %s", exc)
     return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
 
 

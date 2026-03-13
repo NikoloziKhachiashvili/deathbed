@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from deathbed.planner import (
     _estimate_effort,
     _get_action,

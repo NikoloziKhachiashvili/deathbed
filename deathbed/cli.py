@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 
@@ -139,21 +139,27 @@ from .display import console, render_error
     default=False,
     help="Remove the deathbed git post-commit hook.",
 )
+@click.option(
+    "--verbose", "-v",
+    is_flag=True,
+    default=False,
+    help="Enable verbose debug logging.",
+)
 @click.version_option(__version__, "--version", "-V", prog_name="deathbed")
 def main(
     path: str,
     top: int,
     output_format: str,
-    min_score: Optional[int],
+    min_score: int | None,
     watch: bool,
-    diff: Optional[str],
-    export_format: Optional[str],
+    diff: str | None,
+    export_format: str | None,
     ci: bool,
-    since: Optional[str],
+    since: str | None,
     blame: bool,
     leaderboard: bool,
-    org: Optional[str],
-    repo: Optional[str],
+    org: str | None,
+    repo: str | None,
     plan: bool,
     init_ci: bool,
     badge: bool,
@@ -161,6 +167,7 @@ def main(
     heatmap: bool,
     install_hook: bool,
     uninstall_hook: bool,
+    verbose: bool,
 ) -> None:
     """
     \b
@@ -196,6 +203,11 @@ def main(
       deathbed --install-hook           # install git post-commit guard
       deathbed --uninstall-hook         # remove git post-commit guard
     """
+    if verbose:
+        logging.basicConfig(level=logging.DEBUG, format="%(name)s %(levelname)s %(message)s")
+    else:
+        logging.basicConfig(level=logging.WARNING)
+
     repo_path = Path(path).resolve()
 
     # ── Standalone utility modes ──────────────────────────────────────────────
@@ -282,7 +294,7 @@ def main(
 
 # ── Sub-runners ───────────────────────────────────────────────────────────────
 
-def _run_json(repo_path: Path, top: int, min_score: Optional[int]) -> None:
+def _run_json(repo_path: Path, top: int, min_score: int | None) -> None:
     """Emit JSON output for CI / scripting use."""
     try:
         from .analyzer import analyze_repo
@@ -333,7 +345,7 @@ def _run_json(repo_path: Path, top: int, min_score: Optional[int]) -> None:
         sys.exit(1)
 
 
-def _run_markdown(repo_path: Path, top: int, min_score: Optional[int]) -> None:
+def _run_markdown(repo_path: Path, top: int, min_score: int | None) -> None:
     """Emit a Markdown table to stdout."""
     try:
         from .analyzer import analyze_repo
@@ -346,12 +358,12 @@ def _run_markdown(repo_path: Path, top: int, min_score: Optional[int]) -> None:
         sys.exit(1)
 
 
-def _run_html_export(repo_path: Path, top: int, min_score: Optional[int]) -> None:
+def _run_html_export(repo_path: Path, top: int, min_score: int | None) -> None:
     """Analyse repo and write a self-contained HTML report to disk."""
     import time
 
     from .analyzer import analyze_repo
-    from .display import console, make_progress, render_error, render_header, _truncate
+    from .display import _truncate, console, make_progress, render_error, render_header
     from .export import generate_html_report
 
     render_header()
@@ -392,7 +404,8 @@ def _run_html_export(repo_path: Path, top: int, min_score: Optional[int]) -> Non
         out_path.write_text(html, encoding="utf-8")
 
         from rich.panel import Panel
-        from .display import C_GREEN, C_DIM_GREEN
+
+        from .display import C_DIM_GREEN, C_GREEN
         console.print(
             Panel(
                 f"[bold {C_GREEN}]  ✅  Report saved to {out_path.resolve()}[/]",
@@ -406,9 +419,10 @@ def _run_html_export(repo_path: Path, top: int, min_score: Optional[int]) -> Non
 
 def _run_init_ci(repo_path: Path) -> None:
     """Write a GitHub Actions workflow file for deathbed."""
-    from .ci_gen import generate_workflow
-    from .display import C_GREEN, C_DIM_GREEN, C_AMBER, C_RED1
     from rich.panel import Panel
+
+    from .ci_gen import generate_workflow
+    from .display import C_DIM_GREEN, C_GREEN
 
     workflow_dir = repo_path / ".github" / "workflows"
     workflow_file = workflow_dir / "deathbed.yml"
@@ -451,10 +465,11 @@ def _run_badge(repo_path: Path) -> None:
 
 def _run_install_hook(repo_path: Path) -> None:
     """Install a post-commit regression guard hook."""
-    from .hook import install_hook
-    from .config import load_config
-    from .display import C_GREEN, C_DIM_GREEN, C_AMBER
     from rich.panel import Panel
+
+    from .config import load_config
+    from .display import C_DIM_GREEN, C_GREEN
+    from .hook import install_hook
 
     try:
         cfg = load_config(repo_path)
@@ -486,9 +501,10 @@ def _run_install_hook(repo_path: Path) -> None:
 
 def _run_uninstall_hook(repo_path: Path) -> None:
     """Remove the deathbed post-commit hook."""
-    from .hook import uninstall_hook
-    from .display import C_GREEN, C_DIM_GREEN, C_AMBER
     from rich.panel import Panel
+
+    from .display import C_AMBER, C_DIM_GREEN, C_GREEN
+    from .hook import uninstall_hook
 
     try:
         removed = uninstall_hook(repo_path)

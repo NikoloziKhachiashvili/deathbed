@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-import pytest
-
-from deathbed.ci_gen import generate_workflow, generate_badge_markdown
-
+from deathbed.ci_gen import generate_badge_markdown, generate_workflow
 
 # ── generate_workflow ─────────────────────────────────────────────────────────
 

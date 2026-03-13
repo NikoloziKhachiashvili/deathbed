@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import ast
-import re as _re
+import logging
+import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Callable, Optional
-
-import git
+from typing import Callable
 
 from .filters import get_analyzable_files
 from .git_utils import (
+    build_test_index,
     count_lines,
     detect_security_smells,
     find_test_file,
@@ -27,15 +27,19 @@ from .git_utils import (
 )
 from .scoring import FileMetrics, compute_scores
 
+log = logging.getLogger(__name__)
+
+__all__ = ["analyze_repo", "analyze_diff", "analyze_leaderboard", "AuthorStats"]
+
 # ── Regex patterns for cross-language import extraction ───────────────────────
 
-_JS_IMPORT_RE = _re.compile(
+_JS_IMPORT_RE = re.compile(
     r"""(?:import\s+.*?\s+from\s+|require\s*\(\s*)['"]([^'"]+)['"]""",
-    _re.MULTILINE,
+    re.MULTILINE,
 )
-_GENERIC_IMPORT_RE = _re.compile(
+_GENERIC_IMPORT_RE = re.compile(
     r"""import\s+["']?([^\s"';(]+)["']?""",
-    _re.MULTILINE,
+    re.MULTILINE,
 )
 
 
@@ -52,12 +56,12 @@ class AuthorStats:
 def analyze_repo(
     repo_path: Path,
     top: int = 50,
-    min_score: Optional[int] = None,
+    min_score: int | None = None,
     quiet: bool = False,
-    on_progress: Optional[Callable[[str, int, int], None]] = None,
-    since_ref: Optional[str] = None,
+    on_progress: Callable[[str, int, int], None] | None = None,
+    since_ref: str | None = None,
     include_blame: bool = False,
-    _meta: Optional[dict] = None,
+    _meta: dict | None = None,
 ) -> list[FileMetrics]:
     """
     Analyze a git repository and return scored FileMetrics, worst-first.
@@ -95,6 +99,9 @@ def analyze_repo(
     total = len(files)
     results: list[FileMetrics] = []
 
+    # Build test index once for O(1) per-file lookup
+    test_index = build_test_index(root)
+
     for idx, rel_path in enumerate(files):
         if on_progress:
             on_progress(str(rel_path), idx, total)
@@ -106,7 +113,7 @@ def analyze_repo(
             lines                                  = count_lines(abs_path)
             days, commits, authors, recent, prev   = get_file_history(repo, rel_str)
             avg_cx                                 = get_complexity(abs_path)
-            has_test, test_recent, test_has_assert = find_test_file(root, rel_path)
+            has_test, test_recent, test_has_assert = find_test_file(test_index, rel_path)
             dead_count                             = run_vulture(abs_path)
             sec_smells                             = detect_security_smells(abs_path)
 
@@ -132,8 +139,9 @@ def analyze_repo(
                 m.last_author, m.last_commit_msg = get_last_author(repo, rel_str)
 
             results.append(m)
-        except Exception:
-            # Never crash on a single file; silently skip it
+        except Exception as exc:
+            # Never crash on a single file; log and skip
+            log.debug("Skipping %s: %s", rel_str, exc)
             continue
 
     # Signal completion
@@ -182,7 +190,7 @@ def _extract_imports(abs_path: Path) -> set[str]:
     """
     try:
         source = abs_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except OSError:
         return set()
 
     stems: set[str] = set()
@@ -198,13 +206,12 @@ def _extract_imports(abs_path: Path) -> set[str]:
                         stems.add(parts[-1])
                         if len(parts) > 1:
                             stems.add(parts[0])
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        parts = node.module.split(".")
-                        stems.add(parts[-1])
-                        if len(parts) > 1:
-                            stems.add(parts[0])
-        except Exception:
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    parts = node.module.split(".")
+                    stems.add(parts[-1])
+                    if len(parts) > 1:
+                        stems.add(parts[0])
+        except SyntaxError:
             pass
 
     elif suffix in (".js", ".ts", ".jsx", ".tsx"):
@@ -274,11 +281,17 @@ def _detect_clones(results: list[FileMetrics], root: Path) -> None:
             ]
             if lines:
                 contents[m.path] = lines
-        except Exception:
+        except OSError:
             pass
 
     paths = list(contents.keys())
-    n = min(len(paths), 200)
+    total_files = len(paths)
+    n = min(total_files, 200)
+    if total_files > 200:
+        log.info(
+            "Clone detection capped at 200 files (%d total); some files excluded.",
+            total_files,
+        )
     paths = paths[:n]
 
     best: dict[str, tuple[float, str]] = {}
@@ -329,7 +342,6 @@ def _detect_dead_code_multilang(results: list[FileMetrics], root: Path) -> None:
         elif suffix in (".js", ".ts", ".jsx", ".tsx"):
             # Use TODO/FIXME/HACK/DEAD comment density as a dead-code proxy
             try:
-                import re
                 source = abs_path.read_text(encoding="utf-8", errors="replace")
                 dead_markers = len(re.findall(
                     r'//\s*(?:TODO|FIXME|HACK|DEAD|UNUSED|REMOVE|DEPRECATED)',
@@ -337,16 +349,16 @@ def _detect_dead_code_multilang(results: list[FileMetrics], root: Path) -> None:
                 ))
                 if dead_markers > 0:
                     m.dead_code_count = dead_markers
-            except Exception:
-                pass
+            except OSError as exc:
+                log.debug("Dead code detection failed for %s: %s", m.path, exc)
 
 
 def analyze_diff(
     repo_path: Path,
     ref: str,
     top: int = 50,
-    min_score: Optional[int] = None,
-    on_progress: Optional[Callable[[str, int, int], None]] = None,
+    min_score: int | None = None,
+    on_progress: Callable[[str, int, int], None] | None = None,
 ) -> tuple[list[FileMetrics], list[FileMetrics]]:
     """
     Analyze the repo at HEAD (current) and at a historical ref.
@@ -365,6 +377,9 @@ def analyze_diff(
     current_results:    list[FileMetrics] = []
     historical_results: list[FileMetrics] = []
 
+    # Build test index once
+    test_index = build_test_index(root)
+
     for idx, rel_path in enumerate(files):
         if on_progress:
             on_progress(str(rel_path), idx, total)
@@ -375,7 +390,7 @@ def analyze_diff(
         try:
             lines                                  = count_lines(abs_path)
             avg_cx                                 = get_complexity(abs_path)
-            has_test, test_recent, test_has_assert = find_test_file(root, rel_path)
+            has_test, test_recent, test_has_assert = find_test_file(test_index, rel_path)
             dead_count                             = run_vulture(abs_path)
             sec_smells                             = detect_security_smells(abs_path)
 
@@ -410,7 +425,8 @@ def analyze_diff(
             compute_scores(m_hist)
             historical_results.append(m_hist)
 
-        except Exception:
+        except Exception as exc:
+            log.debug("Skipping %s in diff: %s", rel_str, exc)
             continue
 
     if on_progress:
@@ -436,7 +452,7 @@ def analyze_diff(
 
 def analyze_leaderboard(
     repo_path: Path,
-    top: Optional[int] = None,
+    top: int | None = None,
 ) -> list[AuthorStats]:
     """
     Compute per-author stats based on last-author ownership.

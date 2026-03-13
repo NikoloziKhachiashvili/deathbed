@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from deathbed.export import generate_html_report, _human_days, _score_color_css, _score_bar_html
+from deathbed.export import _human_days, _score_bar_html, _score_color_css, generate_html_report
 from deathbed.scoring import FileMetrics, compute_scores
 
 
@@ -100,3 +98,32 @@ def test_html_sortable_table(tmp_path):
     html = generate_html_report([_metric()], tmp_path, 0.5, 1)
     assert "sortTable" in html
     assert "onclick" in html
+
+
+def test_html_contains_correct_version(tmp_path):
+    """Footer must reference the current __version__, not a hardcoded old string."""
+    from deathbed import __version__
+    html = generate_html_report([_metric()], tmp_path, 0.5, 1)
+    assert f"deathbed v{__version__}" in html
+    assert "v1.2.0" not in html
+
+
+def test_html_status_classes_all_present(tmp_path):
+    """All four status classes should appear when results contain each status."""
+    critical = _metric("a.py", days_since_commit=1000, commit_count=200,
+                        avg_complexity=20.0, has_test_file=False, author_count=15,
+                        recent_churn=50, prev_churn=5, lines=2000)
+    warning = _metric("b.py", days_since_commit=400, commit_count=60, avg_complexity=12.0)
+    fair = _metric("c.py", days_since_commit=200, commit_count=30)
+    healthy = _metric("d.py")
+    html = generate_html_report([critical, warning, fair, healthy], tmp_path, 0.5, 4)
+    assert 'row-critical' in html
+    assert 'row-warning' in html or 'row-fair' in html  # at least one non-critical non-healthy
+    assert 'row-healthy' in html
+
+
+def test_html_security_section_empty_when_no_smells(tmp_path):
+    """Security section should be absent when no files have security smells."""
+    results = [_metric("a.py"), _metric("b.py")]
+    html = generate_html_report(results, tmp_path, 0.5, 2)
+    assert "SECURITY ALERTS" not in html

@@ -3,17 +3,12 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 from deathbed.history import (
     _sparkline,
     enrich_with_history,
     get_repo_score_delta,
     load_history,
-    save_scan,
 )
 from deathbed.scoring import FileMetrics, compute_scores
 
@@ -85,7 +80,7 @@ def test_save_and_load(tmp_path, monkeypatch):
 
     # Use the real save_scan by bypassing conftest's monkeypatch
     # Directly call the private helpers
-    results = [_m("a.py", 80)]
+    [_m("a.py", 80)]
     hist_mod._save_all({str(tmp_path.resolve()): [{
         "timestamp": int(time.time()),
         "repo_score": 80,

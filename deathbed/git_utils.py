@@ -3,11 +3,32 @@
 from __future__ import annotations
 
 import ast
+import contextlib
+import logging
+import os
+import re
+import subprocess
 import time
 from pathlib import Path
-from typing import Optional
 
 import git
+
+log = logging.getLogger(__name__)
+
+__all__ = [
+    "open_repo",
+    "get_repo_root",
+    "count_lines",
+    "get_file_history",
+    "get_ref_timestamp",
+    "find_test_file",
+    "build_test_index",
+    "get_complexity",
+    "detect_security_smells",
+    "get_last_author",
+    "get_changed_files_since",
+    "run_vulture",
+]
 
 
 def open_repo(path: Path) -> git.Repo:
@@ -24,14 +45,15 @@ def count_lines(abs_path: Path) -> int:
     try:
         text = abs_path.read_text(encoding="utf-8", errors="replace")
         return text.count("\n") + (1 if text and not text.endswith("\n") else 0)
-    except OSError:
+    except OSError as exc:
+        log.debug("Could not read %s: %s", abs_path, exc)
         return 0
 
 
 def get_file_history(
     repo: git.Repo,
     rel_path: str,
-    before_ts: Optional[int] = None,
+    before_ts: int | None = None,
 ) -> tuple[int, int, int, int, int]:
     """
     Return (days_since_last_commit, commit_count, author_count,
@@ -52,7 +74,8 @@ def get_file_history(
             "--",
             rel_path,
         )
-    except git.GitCommandError:
+    except git.GitCommandError as exc:
+        log.debug("git log failed for %s: %s", rel_path, exc)
         return 0, 0, 0, 0, 0
 
     if not raw.strip():
@@ -98,7 +121,8 @@ def get_ref_timestamp(repo: git.Repo, ref: str) -> int:
     try:
         ts_str = repo.git.log(ref, "-1", "--format=%at")
         return int(ts_str.strip())
-    except Exception:
+    except (git.GitCommandError, ValueError) as exc:
+        log.debug("get_ref_timestamp failed for %s: %s", ref, exc)
         return int(time.time())
 
 
@@ -112,17 +136,45 @@ def _check_test_assertions(fpath: Path) -> bool:
     try:
         source = fpath.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assert):
-                return True
-        return False
-    except Exception:
+        return any(isinstance(node, ast.Assert) for node in ast.walk(tree))
+    except (SyntaxError, OSError):
         return True  # parse error → assume assertions exist
 
 
-def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool, bool]:
+def build_test_index(repo_root: Path) -> dict[str, Path]:
     """
-    Look for a corresponding test file anywhere in the repo.
+    Walk the repo once and build a mapping of lowercased filename → absolute path
+    for files that look like test files.
+
+    A file is a test file if:
+    - Its name starts with "test_" or contains "_test.", ".test.", or ".spec."
+    - Or it lives inside a directory named tests/test/spec/__tests__/test_suite
+    """
+    test_dirs = {"tests", "test", "spec", "__tests__", "test_suite"}
+    index: dict[str, Path] = {}
+
+    for dirpath, _dirnames, filenames in os.walk(repo_root):
+        dir_p = Path(dirpath)
+        in_test_dir = dir_p.name in test_dirs
+
+        for fname in filenames:
+            lower = fname.lower()
+            is_test_file = (
+                lower.startswith("test_")
+                or "_test." in lower
+                or ".test." in lower
+                or ".spec." in lower
+                or in_test_dir
+            )
+            if is_test_file:
+                index[lower] = dir_p / fname
+
+    return index
+
+
+def find_test_file(index: dict[str, Path], rel_path: Path) -> tuple[bool, bool, bool]:
+    """
+    Look for a corresponding test file using a pre-built index.
     Returns (has_test, is_recent, has_assertions) where:
       - has_test:        a matching test file was found
       - is_recent:       the test file was modified within 90 days
@@ -141,28 +193,39 @@ def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool, bool]:
         f"{stem}.spec.ts",
         f"{stem}.test.ts",
     ]
-    # Also look in common test directories
-    test_dirs = {"tests", "test", "spec", "__tests__", "test_suite"}
 
     now = time.time()
     ninety_days = 90 * 86400
 
-    for dirpath, dirnames, filenames in __import__("os").walk(repo_root):
-        dir_p = Path(dirpath)
-        for fname in filenames:
-            lower = fname.lower()
-            for candidate in candidates:
-                if lower == candidate.lower() or lower.startswith(f"test_{stem}".lower()):
-                    fpath = dir_p / fname
-                    try:
-                        mtime = fpath.stat().st_mtime
-                        is_recent = (now - mtime) < ninety_days
-                    except OSError:
-                        is_recent = False
-                    return True, is_recent, _check_test_assertions(fpath)
-            # check if file is in a test dir and has the stem in the name
-            if dir_p.name in test_dirs and stem.lower() in lower:
-                fpath = dir_p / fname
+    # Check exact candidates first
+    for candidate in candidates:
+        lower_candidate = candidate.lower()
+        if lower_candidate in index:
+            fpath = index[lower_candidate]
+            try:
+                mtime = fpath.stat().st_mtime
+                is_recent = (now - mtime) < ninety_days
+            except OSError:
+                is_recent = False
+            return True, is_recent, _check_test_assertions(fpath)
+
+    # Also check any test file that starts with test_{stem}
+    prefix = f"test_{stem}".lower()
+    for lower_fname, fpath in index.items():
+        if lower_fname.startswith(prefix):
+            try:
+                mtime = fpath.stat().st_mtime
+                is_recent = (now - mtime) < ninety_days
+            except OSError:
+                is_recent = False
+            return True, is_recent, _check_test_assertions(fpath)
+
+    # Check any test file in a test dir that contains the stem
+    stem_lower = stem.lower()
+    for lower_fname, fpath in index.items():
+        if stem_lower in lower_fname:
+            test_dirs = {"tests", "test", "spec", "__tests__", "test_suite"}
+            if fpath.parent.name in test_dirs:
                 try:
                     mtime = fpath.stat().st_mtime
                     is_recent = (now - mtime) < ninety_days
@@ -173,7 +236,7 @@ def find_test_file(repo_root: Path, rel_path: Path) -> tuple[bool, bool, bool]:
     return False, False, True
 
 
-def _get_complexity_python(abs_path: Path) -> Optional[float]:
+def _get_complexity_python(abs_path: Path) -> float | None:
     """
     Run radon cyclomatic complexity on a Python file.
     Returns average complexity or None if not applicable / radon fails.
@@ -186,16 +249,20 @@ def _get_complexity_python(abs_path: Path) -> Optional[float]:
         if not results:
             return 1.0  # trivially simple
         return sum(r.complexity for r in results) / len(results)
-    except Exception:
+    except ImportError as exc:
+        log.debug("radon not available: %s", exc)
+        return None
+    except Exception as exc:
+        log.debug("Python complexity failed for %s: %s", abs_path, exc)
         return None
 
 
-def _get_complexity_js(abs_path: Path) -> Optional[float]:
+def _get_complexity_js(abs_path: Path) -> float | None:
     """Estimate JS/TS complexity via control flow keyword counting."""
-    import re
     try:
         source = abs_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except OSError as exc:
+        log.debug("Could not read %s: %s", abs_path, exc)
         return None
     func_count = max(1, len(re.findall(
         r'(?:function\s+\w+\s*\(|(?:^|\s)(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\([^)]*\)\s*=>|\b(?:async\s+)?function\s*\()',
@@ -208,9 +275,8 @@ def _get_complexity_js(abs_path: Path) -> Optional[float]:
     return max(1.0, (cc_points / func_count) + 1.0)
 
 
-def _get_complexity_go(abs_path: Path) -> Optional[float]:
+def _get_complexity_go(abs_path: Path) -> float | None:
     """Run gocyclo on a Go file. Returns average complexity or None if unavailable."""
-    import subprocess
     try:
         result = subprocess.run(
             ["gocyclo", str(abs_path)],
@@ -222,25 +288,28 @@ def _get_complexity_go(abs_path: Path) -> Optional[float]:
         for line in result.stdout.strip().splitlines():
             parts = line.split()
             if parts:
-                try:
+                with contextlib.suppress(ValueError):
                     complexities.append(int(parts[0]))
-                except ValueError:
-                    pass
         if not complexities:
             return None
         return sum(complexities) / len(complexities)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
+        log.debug("gocyclo not found; skipping Go complexity for %s", abs_path)
         return None
-    except Exception:
+    except subprocess.TimeoutExpired:
+        log.debug("gocyclo timed out for %s", abs_path)
+        return None
+    except Exception as exc:
+        log.debug("Go complexity failed for %s: %s", abs_path, exc)
         return None
 
 
-def _get_complexity_rust(abs_path: Path) -> Optional[float]:
+def _get_complexity_rust(abs_path: Path) -> float | None:
     """Count match arms and control flow as a Rust complexity proxy."""
-    import re
     try:
         source = abs_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except OSError as exc:
+        log.debug("Could not read %s: %s", abs_path, exc)
         return None
     func_count = max(1, len(re.findall(r'\bfn\s+\w+', source)))
     cc_points = len(re.findall(
@@ -251,15 +320,15 @@ def _get_complexity_rust(abs_path: Path) -> Optional[float]:
 
 def detect_dead_code_rust(abs_path: Path) -> int:
     """Count #[allow(dead_code)] annotations as a dead code signal."""
-    import re
     try:
         source = abs_path.read_text(encoding="utf-8", errors="replace")
         return len(re.findall(r'#\[allow\(dead_code\)\]', source))
-    except Exception:
+    except OSError as exc:
+        log.debug("Could not read %s: %s", abs_path, exc)
         return 0
 
 
-def get_complexity(abs_path: Path) -> Optional[float]:
+def get_complexity(abs_path: Path) -> float | None:
     """
     Return cyclomatic complexity for the given source file.
     Dispatches to language-specific implementations.
@@ -296,7 +365,8 @@ def detect_security_smells(abs_path: Path) -> list[str]:
     try:
         source = abs_path.read_text(encoding="utf-8", errors="replace")
         tree = ast.parse(source, filename=str(abs_path))
-    except Exception:
+    except (SyntaxError, OSError) as exc:
+        log.debug("Security smell detection failed for %s: %s", abs_path, exc)
         return []
 
     smells: list[str] = []
@@ -360,8 +430,8 @@ def get_last_author(repo: git.Repo, rel_path: str) -> tuple[str, str]:
         if "\x1f" in raw:
             name, subject = raw.strip().split("\x1f", 1)
             return name.strip(), subject.strip()
-    except Exception:
-        pass
+    except (git.GitCommandError, ValueError) as exc:
+        log.debug("get_last_author failed for %s: %s", rel_path, exc)
     return "", ""
 
 
@@ -370,7 +440,8 @@ def get_changed_files_since(repo: git.Repo, since_ref: str) -> set[str]:
     try:
         raw = repo.git.diff("--name-only", f"{since_ref}...HEAD")
         return {line.strip() for line in raw.splitlines() if line.strip()}
-    except Exception:
+    except git.GitCommandError as exc:
+        log.debug("get_changed_files_since failed for %s: %s", since_ref, exc)
         return set()
 
 
@@ -398,5 +469,6 @@ def run_vulture(abs_path: Path) -> int:
         )
     except ImportError:
         return 0
-    except Exception:
+    except Exception as exc:
+        log.debug("vulture failed for %s: %s", abs_path, exc)
         return 0

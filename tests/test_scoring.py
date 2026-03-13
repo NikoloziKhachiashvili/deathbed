@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import pytest
+
 from deathbed.scoring import (
-    FileMetrics,
     WEIGHTS,
+    FileMetrics,
     _age_score,
     _author_score,
     _churn_score,
@@ -17,11 +18,10 @@ from deathbed.scoring import (
     _size_score,
     _status,
     _test_score,
-    compute_scores,
     compute_repo_score,
+    compute_scores,
     letter_grade,
 )
-
 
 # ── Weights sanity ─────────────────────────────────────────────────────────────
 
@@ -456,4 +456,70 @@ def test_diagnosis_god_file_requires_all_conditions():
 
 def test_version_is_3():
     from deathbed import __version__
-    assert __version__ == "3.0.0"
+    assert __version__.startswith("3.")
+
+
+# ── Boundary / property tests ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("lines", [0, 1, 150, 300, 600, 1000, 2000, 5000])
+def test_size_score_in_range(lines):
+    assert 0 <= _size_score(lines) <= 100
+
+
+@pytest.mark.parametrize("days", [0, 1, 30, 90, 180, 365, 730, 1500])
+def test_age_score_in_range(days):
+    assert 0 <= _age_score(days) <= 100
+
+
+@pytest.mark.parametrize("commits", [0, 1, 5, 20, 50, 100, 200, 500])
+def test_churn_score_in_range(commits):
+    assert 0 <= _churn_score(commits) <= 100
+
+
+@pytest.mark.parametrize("recent", [0, 1, 5, 15, 30, 50, 100])
+def test_recent_churn_score_in_range(recent):
+    assert 0 <= _recent_churn_score(recent) <= 100
+
+
+@pytest.mark.parametrize("avg", [None, 0.0, 1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 50.0])
+def test_complexity_score_in_range(avg):
+    assert 0 <= _complexity_score(avg) <= 100
+
+
+@pytest.mark.parametrize("authors", [0, 1, 3, 6, 10, 15, 30])
+def test_author_score_in_range(authors):
+    assert 0 <= _author_score(authors) <= 100
+
+
+@pytest.mark.parametrize("count", [0, 1, 3, 8, 15, 20, 50])
+def test_dead_code_score_in_range(count):
+    assert 0 <= _dead_code_score(count, is_supported=True) <= 100
+    assert 0 <= _dead_code_score(count, is_supported=False) <= 100
+
+
+@pytest.mark.parametrize("count", [0, 3, 6, 10, 15, 20, 30])
+def test_coupling_score_in_range(count):
+    assert 0 <= _coupling_score(count) <= 100
+
+
+def test_compute_scores_status_valid():
+    valid_statuses = {"CRITICAL", "WARNING", "FAIR", "HEALTHY"}
+    m = _make()
+    compute_scores(m)
+    assert m.status in valid_statuses
+
+
+def test_compute_scores_composite_in_range():
+    m = _make(
+        lines=2000, days_since_commit=1000, commit_count=200,
+        avg_complexity=20.0, has_test_file=False, author_count=15,
+        recent_churn=50, prev_churn=5,
+    )
+    compute_scores(m)
+    assert 0 <= m.composite_score <= 100
+
+
+def test_letter_grade_valid_values():
+    valid_grades = {"A", "B", "C", "D", "F"}
+    for score in range(0, 101):
+        assert letter_grade(score) in valid_grades

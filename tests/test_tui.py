@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import sys
-import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class TestRunInteractiveFallback:
@@ -12,8 +10,9 @@ class TestRunInteractiveFallback:
 
     def test_run_interactive_signature(self):
         """run_interactive has the correct parameter signature."""
-        from deathbed.tui import run_interactive
         import inspect
+
+        from deathbed.tui import run_interactive
         sig = inspect.signature(run_interactive)
         params = list(sig.parameters.keys())
         assert "repo_path" in params
@@ -23,26 +22,24 @@ class TestRunInteractiveFallback:
         assert "include_blame" in params
         assert "org_path" in params
 
-    def test_run_interactive_calls_fallback_display_when_textual_absent(self):
+    def test_run_interactive_calls_fallback_display_when_textual_absent(self, tmp_path):
         """When textual is not importable, run_interactive calls run_display."""
-        with patch("deathbed.display.run_display") as mock_run:
-            mock_run.return_value = None
-            # Simulate textual being unavailable by patching the import inside run_interactive
-            original_textual = sys.modules.get("textual", "NOTSET")
-            try:
-                sys.modules["textual"] = None  # type: ignore
-                with patch("deathbed.display.console") as mock_console:
-                    mock_console.print = MagicMock()
-                    import deathbed.tui as tui_mod
-                    try:
-                        tui_mod.run_interactive(Path("."), top=10, min_score=None)
-                    except Exception:
-                        pass  # may fail for other reasons; just ensure no crash on import check
-            finally:
-                if original_textual == "NOTSET":
-                    sys.modules.pop("textual", None)
-                else:
-                    sys.modules["textual"] = original_textual  # type: ignore
+        saved = sys.modules.pop("textual", "NOTSET")
+        try:
+            sys.modules["textual"] = None  # type: ignore[assignment]
+            with (
+                patch("deathbed.display.run_display") as mock_run_display,
+                patch("deathbed.display.console") as mock_console,
+            ):
+                mock_console.print = MagicMock()
+                from deathbed.tui import run_interactive
+                run_interactive(tmp_path, top=5, min_score=None)
+            mock_run_display.assert_called_once()
+        finally:
+            if saved == "NOTSET":
+                sys.modules.pop("textual", None)
+            else:
+                sys.modules["textual"] = saved  # type: ignore[assignment]
 
 
 class TestTuiModule:

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Optional
 
 from .scoring import FileMetrics
-
 
 # ── Effort estimation ─────────────────────────────────────────────────────────
 

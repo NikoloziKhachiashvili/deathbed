@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -41,7 +40,7 @@ def runner():
 def test_version_flag(runner):
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
-    assert "3.0.0" in result.output
+    assert "3.1.0" in result.output
 
 
 def test_help_flag(runner):
@@ -81,17 +80,17 @@ def test_ci_flag_shown_in_help(runner):
 
 
 def test_json_format_with_mock(runner, tmp_path):
-    results = [_healthy_metric()]
+    [_healthy_metric()]
     with patch("deathbed.cli._run_json") as mock_json:
         mock_json.return_value = None
-        result = runner.invoke(main, ["--format", "json", "--path", str(tmp_path)])
+        runner.invoke(main, ["--format", "json", "--path", str(tmp_path)])
         mock_json.assert_called_once()
 
 
 def test_markdown_format_with_mock(runner, tmp_path):
     with patch("deathbed.cli._run_markdown") as mock_md:
         mock_md.return_value = None
-        result = runner.invoke(main, ["--format", "markdown", "--path", str(tmp_path)])
+        runner.invoke(main, ["--format", "markdown", "--path", str(tmp_path)])
         mock_md.assert_called_once()
 
 

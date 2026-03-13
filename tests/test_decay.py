@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import time
-import pytest
-from pathlib import Path
 from unittest.mock import patch
 
 from deathbed.decay import (
@@ -12,7 +10,6 @@ from deathbed.decay import (
     predict_decay,
 )
 from deathbed.scoring import FileMetrics, compute_scores
-
 
 # ── _linear_regression ────────────────────────────────────────────────────────
 

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import sys
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -118,7 +117,7 @@ def test_run_display_ci_mode_with_critical(monkeypatch):
     results = [_critical()]
 
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
-    with patch("deathbed.analyzer.analyze_repo", side_effect=_fake_analyze(results)):
+    with patch("deathbed.analyzer.analyze_repo", side_effect=_fake_analyze(results)):  # noqa: SIM117
         with pytest.raises(SystemExit) as exc_info:
             run_display(Path("."), 50, None, ci_mode=True)
     assert exc_info.value.code == 1
@@ -133,11 +132,12 @@ def test_run_display_no_files(monkeypatch):
 
 
 def test_run_display_invalid_git(monkeypatch):
-    from deathbed.display import run_display
     import git
 
+    from deathbed.display import run_display
+
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
-    with patch("deathbed.analyzer.analyze_repo",
+    with patch("deathbed.analyzer.analyze_repo",  # noqa: SIM117
                side_effect=git.InvalidGitRepositoryError("not a repo")):
         with pytest.raises(SystemExit) as exc_info:
             run_display(Path("/not/a/repo"), 50, None)
@@ -145,14 +145,14 @@ def test_run_display_invalid_git(monkeypatch):
 
 
 def test_run_display_no_such_path(monkeypatch):
-    from deathbed.display import run_display
     import git
+
+    from deathbed.display import run_display
 
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
     with patch("deathbed.analyzer.analyze_repo",
-               side_effect=git.NoSuchPathError("no path")):
-        with pytest.raises(SystemExit) as exc_info:
-            run_display(Path("/bad/path"), 50, None)
+               side_effect=git.NoSuchPathError("no path")), pytest.raises(SystemExit) as exc_info:
+        run_display(Path("/bad/path"), 50, None)
     assert exc_info.value.code == 1
 
 
@@ -161,9 +161,8 @@ def test_run_display_unexpected_error(monkeypatch):
 
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
     with patch("deathbed.analyzer.analyze_repo",
-               side_effect=RuntimeError("boom")):
-        with pytest.raises(SystemExit) as exc_info:
-            run_display(Path("."), 50, None)
+               side_effect=RuntimeError("boom")), pytest.raises(SystemExit) as exc_info:
+        run_display(Path("."), 50, None)
     assert exc_info.value.code == 1
 
 
@@ -172,14 +171,13 @@ def test_run_display_unexpected_error(monkeypatch):
 def test_analyze_repo_mocked(monkeypatch, tmp_path):
     """Exercise analyze_repo with mocked git helpers."""
     from deathbed.analyzer import analyze_repo
-    import deathbed.analyzer as ana_mod
 
     # Write a real Python file so get_analyzable_files finds it
     (tmp_path / "foo.py").write_text("def x(): return 1\n", encoding="utf-8")
     (tmp_path / ".git").mkdir()   # fake git dir marker
 
     with (
-        patch("deathbed.analyzer.open_repo") as mock_repo_open,
+        patch("deathbed.analyzer.open_repo"),
         patch("deathbed.analyzer.get_repo_root", return_value=tmp_path),
         patch("deathbed.analyzer.get_file_history", return_value=(10, 3, 1, 1, 0)),
         patch("deathbed.analyzer.get_complexity", return_value=2.0),
@@ -231,11 +229,12 @@ def test_run_diff_display_no_crash(monkeypatch):
 
 
 def test_run_diff_display_error(monkeypatch):
-    from deathbed.display import run_diff_display
     import git
 
+    from deathbed.display import run_diff_display
+
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
-    with patch("deathbed.analyzer.analyze_diff",
+    with patch("deathbed.analyzer.analyze_diff",  # noqa: SIM117
                side_effect=git.InvalidGitRepositoryError("bad")):
         with pytest.raises(SystemExit) as exc_info:
             run_diff_display(Path("/bad"), "HEAD~1", 50, None)
@@ -247,9 +246,8 @@ def test_run_diff_display_generic_error(monkeypatch):
 
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
     with patch("deathbed.analyzer.analyze_diff",
-               side_effect=RuntimeError("oops")):
-        with pytest.raises(SystemExit) as exc_info:
-            run_diff_display(Path("."), "HEAD~1", 50, None)
+               side_effect=RuntimeError("oops")), pytest.raises(SystemExit) as exc_info:
+        run_diff_display(Path("."), "HEAD~1", 50, None)
     assert exc_info.value.code == 1
 
 
@@ -299,8 +297,8 @@ def test_analyze_diff_with_security_smell(tmp_path):
 
 
 def test_run_leaderboard_display_no_crash(monkeypatch):
-    from deathbed.display import run_leaderboard_display
     from deathbed.analyzer import AuthorStats
+    from deathbed.display import run_leaderboard_display
 
     authors = [AuthorStats("alice", 3, 72.0, 1, 1, "C")]
 
@@ -310,11 +308,12 @@ def test_run_leaderboard_display_no_crash(monkeypatch):
 
 
 def test_run_leaderboard_display_error(monkeypatch):
-    from deathbed.display import run_leaderboard_display
     import git
 
+    from deathbed.display import run_leaderboard_display
+
     monkeypatch.setattr("deathbed.display.make_progress", _mock_progress)
-    with patch("deathbed.analyzer.analyze_leaderboard",
+    with patch("deathbed.analyzer.analyze_leaderboard",  # noqa: SIM117
                side_effect=git.InvalidGitRepositoryError("bad")):
         with pytest.raises(SystemExit) as exc_info:
             run_leaderboard_display(Path("/bad"), 50, None)

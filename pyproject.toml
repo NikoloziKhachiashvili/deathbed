@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deathbed"
-version = "3.0.0"
+version = "3.1.0"
 description = "Find the files in your codebase that are dying before they kill you."
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,6 +37,8 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.0",
 ]
 interactive = ["textual>=0.40"]
 
@@ -55,3 +57,17 @@ addopts = "--cov=deathbed --cov-report=term-missing -q"
 [tool.coverage.run]
 source = ["deathbed"]
 omit = ["tests/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # long HTML/string lines are intentional in templates
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

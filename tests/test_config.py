@@ -1,10 +1,9 @@
 """Tests for config.py — TOML config loader."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
-from deathbed.config import load_config, _try_load_toml, _DEFAULTS
+from deathbed.config import _DEFAULTS, _try_load_toml, load_config
 
 
 class TestTryLoadToml:

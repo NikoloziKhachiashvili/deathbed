@@ -1,225 +1,44 @@
 """
-display.py — the crown jewel of deathbed.
-
-Every panel, color, and layout decision lives here.
-Rich is used to its absolute fullest.
+Rich output renderers: tables, panels, summaries, etc.
 """
 
 from __future__ import annotations
 
-import sys
-import time
+import logging
 from pathlib import Path
-from typing import Optional
 
-# ── Windows UTF-8 fix ─────────────────────────────────────────────────────────
-# Must happen before the Console is created so Rich sees the right encoding.
-if sys.platform == "win32":
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    except (AttributeError, OSError):
-        pass
-
-import git
 from rich import box
 from rich.align import Align
-from rich.columns import Columns
-from rich.console import Console
 from rich.markup import escape
 from rich.padding import Padding
 from rich.panel import Panel
-from rich.progress import (
-    BarColumn,
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-)
-from rich.rule import Rule
-from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
-from .scoring import FileMetrics, letter_grade
+from ..scoring import FileMetrics, letter_grade
+from .palette import (
+    C_AMBER,
+    C_CRIMSON,
+    C_DIM,
+    C_DIM_GREEN,
+    C_GREEN,
+    C_GREY,
+    C_ORANGE,
+    C_RED1,
+    C_RED5,
+    C_RED6,
+    C_SKULL,
+    C_WHITE,
+    _health_icon,
+    _human_days,
+    _row_style,
+    _score_bar,
+    _score_color,
+    _truncate,
+    console,
+)
 
-# ── Global console ─────────────────────────────────────────────────────────────
-console = Console(highlight=False, legacy_windows=False)
-
-# ── Palette ───────────────────────────────────────────────────────────────────
-
-C_CRIMSON   = "rgb(220,20,60)"
-C_RED1      = "rgb(255,69,58)"
-C_RED2      = "rgb(240,50,40)"
-C_RED3      = "rgb(220,30,20)"
-C_RED4      = "rgb(200,15,10)"
-C_RED5      = "rgb(178,0,0)"
-C_RED6      = "rgb(139,0,0)"
-C_ORANGE    = "rgb(255,140,0)"
-C_AMBER     = "rgb(255,191,0)"
-C_GREEN     = "rgb(0,200,80)"
-C_DIM_GREEN = "rgb(0,120,50)"
-C_GREY      = "rgb(120,120,120)"
-C_WHITE     = "rgb(230,230,230)"
-C_DIM       = "rgb(80,80,80)"
-C_SKULL     = "rgb(255,69,58)"
-
-ROW_CRITICAL = Style(color="rgb(255,100,100)", bold=True)
-ROW_WARNING  = Style(color="rgb(255,180,50)",  bold=True)
-ROW_FAIR     = Style(color="rgb(230,215,80)")
-ROW_HEALTHY  = Style(color="rgb(100,210,130)", dim=True)
-
-# ── ASCII art logo ─────────────────────────────────────────────────────────────
-
-_LOGO_LINES = [
-    "██████╗ ███████╗ █████╗ ████████╗██╗  ██╗██████╗ ███████╗██████╗ ",
-    "██╔══██╗██╔════╝██╔══██╗╚══██╔══╝██║  ██║██╔══██╗██╔════╝██╔══██╗",
-    "██║  ██║█████╗  ███████║   ██║   ███████║██████╔╝█████╗  ██║  ██║",
-    "██║  ██║██╔══╝  ██╔══██║   ██║   ██╔══██║██╔══██╗██╔══╝  ██║  ██║",
-    "██████╔╝███████╗██║  ██║   ██║   ██║  ██║██████╔╝███████╗██████╔╝",
-    "╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═════╝ ╚══════╝╚═════╝ ",
-]
-
-_LOGO_COLORS = [C_RED1, C_RED2, C_RED3, C_RED4, C_RED5, C_RED6]
-
-_TAGLINE = "every codebase has files that are dying.  find them."
-
-
-def _build_logo() -> Text:
-    logo = Text(justify="center")
-    for i, (line, color) in enumerate(zip(_LOGO_LINES, _LOGO_COLORS)):
-        if i > 0:
-            logo.append("\n")
-        logo.append(line, style=f"bold {color}")
-    return logo
-
-
-# ── Small helpers ──────────────────────────────────────────────────────────────
-
-def _health_icon(status: str) -> str:
-    return {"CRITICAL": "💀", "WARNING": "⚠️ ", "FAIR": "🌡 ", "HEALTHY": "✅"}.get(status, "·")
-
-
-def _row_style(status: str) -> Style:
-    return {
-        "CRITICAL": ROW_CRITICAL,
-        "WARNING":  ROW_WARNING,
-        "FAIR":     ROW_FAIR,
-        "HEALTHY":  ROW_HEALTHY,
-    }.get(status, ROW_HEALTHY)
-
-
-def _score_color(score: int) -> str:
-    if score >= 80:
-        return C_GREEN
-    if score >= 60:
-        return C_AMBER
-    if score >= 40:
-        return C_ORANGE
-    return C_SKULL
-
-
-def _score_bar(score: int, width: int = 18) -> Text:
-    """A compact coloured block progress bar for a 0-100 score."""
-    filled = round(score / 100 * width)
-    empty  = width - filled
-    color  = _score_color(score)
-    bar = Text()
-    bar.append("█" * filled, style=f"bold {color}")
-    bar.append("░" * empty,  style=C_DIM)
-    bar.append(f"  {score:3d}", style=color)
-    return bar
-
-
-def _human_days(days: int) -> str:
-    if days == 0:
-        return "today"
-    if days == 1:
-        return "yesterday"
-    if days < 7:
-        return f"{days}d ago"
-    if days < 30:
-        weeks = days // 7
-        return f"{weeks}w ago"
-    if days < 365:
-        months = days // 30
-        return f"{months}mo ago"
-    years    = days // 365
-    leftover = (days % 365) // 30
-    return f"{years}y {leftover}mo ago" if leftover else f"{years}y ago"
-
-
-def _truncate(s: str, n: int) -> str:
-    return s if len(s) <= n else "…" + s[-(n - 1):]
-
-
-# ── Public render functions ────────────────────────────────────────────────────
-
-def render_header() -> None:
-    """Print the big crimson DEATHBED logo + tagline."""
-    console.print()
-    logo = _build_logo()
-    console.print(Align(logo, align="center"))
-    console.print()
-    tagline = Text(_TAGLINE, style=f"italic dim {C_GREY}", justify="center")
-    console.print(Align(tagline, align="center"))
-    console.print()
-
-
-def render_org_header() -> None:
-    """Print the DEATHBED logo with an ORG SCAN subtitle."""
-    console.print()
-    logo = _build_logo()
-    console.print(Align(logo, align="center"))
-    console.print()
-    org_rule = Rule(
-        title=f"[bold {C_RED1}]  🏢  O R G   S C A N  [/]",
-        style=C_RED5,
-        characters="═",
-    )
-    console.print(org_rule)
-    console.print()
-    tagline = Text(
-        "scanning your entire organisation — one repo at a time.",
-        style=f"italic dim {C_GREY}",
-        justify="center",
-    )
-    console.print(Align(tagline, align="center"))
-    console.print()
-
-
-def render_error(title: str, message: str) -> None:
-    """Display a styled error panel — no raw tracebacks ever."""
-    panel = Panel(
-        f"[bold {C_RED1}]{escape(message)}[/]",
-        title=f"[bold {C_RED1}]✗  {escape(title)}[/]",
-        border_style=C_RED5,
-        padding=(1, 2),
-    )
-    console.print(panel)
-
-
-def make_progress() -> Progress:
-    """Return a beautiful progress bar for the scanning phase."""
-    return Progress(
-        SpinnerColumn(spinner_name="dots2", style=f"bold {C_CRIMSON}"),
-        TextColumn(
-            "[bold {task.fields[color]}]{task.description}[/]",
-            justify="left",
-        ),
-        BarColumn(
-            bar_width=36,
-            style=C_RED6,
-            complete_style=C_CRIMSON,
-            finished_style=C_DIM_GREEN,
-        ),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        TextColumn("[dim]{task.fields[current_file]}[/]", justify="left"),
-        console=console,
-        transient=True,
-    )
+log = logging.getLogger(__name__)
 
 
 def render_summary(
@@ -228,12 +47,12 @@ def render_summary(
     elapsed: float,
     *,
     repo_score: int = 0,
-    repo_score_delta: Optional[int] = None,
-    since_ref: Optional[str] = None,
+    repo_score_delta: int | None = None,
+    since_ref: str | None = None,
     since_count: int = 0,
     ignored_count: int = 0,
     decaying_count: int = 0,
-    lang_counts: Optional[dict] = None,
+    lang_counts: dict | None = None,
 ) -> None:
     """Display the post-scan summary stats panel."""
     critical      = sum(1 for m in results if m.status == "CRITICAL")
@@ -244,7 +63,6 @@ def render_summary(
     sec_smell_ct  = sum(1 for m in results if m.has_security_smell)
     coupled_ct    = sum(1 for m in results if m.coupling_count >= 5)
 
-    # Determine number of columns: base 10 + 1 for decay if any + 1 for langs if any
     n_cols = 10
     show_decay = decaying_count > 0
     show_langs = bool(lang_counts)
@@ -264,7 +82,6 @@ def render_summary(
         t.append(label, style=f"dim {C_GREY}")
         return t
 
-    # Repo score cell with grade and optional delta
     grade = letter_grade(repo_score)
     grade_color = _score_color(repo_score)
     delta_str = ""
@@ -314,7 +131,8 @@ def render_summary(
         subtitles.append(f"PR mode \u2014 {since_count} file(s) changed since {since_ref}")
     if ignored_count > 0:
         subtitles.append(f"{ignored_count} file(s) ignored via .deathbedignore")
-    panel_subtitle = f"[dim {C_GREY}]{' \u00b7 '.join(subtitles)}[/]" if subtitles else None
+    _sep = " \u00b7 "
+    panel_subtitle = f"[dim {C_GREY}]{_sep.join(subtitles)}[/]" if subtitles else None
 
     panel = Panel(
         Padding(grid, (1, 0)),
@@ -327,7 +145,11 @@ def render_summary(
     console.print()
 
 
-def render_table(results: list[FileMetrics], show_blame: bool = False, decay_predictions: Optional[dict] = None) -> None:
+def render_table(
+    results: list[FileMetrics],
+    show_blame: bool = False,
+    decay_predictions: dict | None = None,
+) -> None:
     """Render the main beautiful results table."""
     if not results:
         console.print(
@@ -379,19 +201,16 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
     for m in results:
         style = _row_style(m.status)
 
-        # HEALTH cell
         icon     = _health_icon(m.status)
         health_t = Text(justify="center")
         health_t.append(f"{icon} ", style=style)
-        health_t.append(str(m.composite_score), style=Style(bold=True, color=_score_color(m.composite_score)))
+        health_t.append(str(m.composite_score), style=_score_color(m.composite_score))
 
-        # FILE cell
         display_path = _truncate(m.path, 60)
         file_t = Text(escape(display_path), style=style, no_wrap=True)
 
         row_cells: list = [health_t, file_t]
 
-        # TREND cell
         if has_trend:
             if m.score_delta is not None:
                 if m.score_delta > 0:
@@ -404,7 +223,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
                 trend_t = Text("━", style=C_DIM, justify="right")
             row_cells.append(trend_t)
 
-        # LINES cell
         lines_color = (
             C_SKULL  if m.lines > 1000 else
             C_ORANGE if m.lines > 600  else
@@ -414,7 +232,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
         lines_t = Text(f"{m.lines:,}", style=f"bold {lines_color}", justify="right")
         row_cells.append(lines_t)
 
-        # LAST TOUCHED cell
         age_color = (
             C_SKULL  if m.days_since_commit > 730 else
             C_ORANGE if m.days_since_commit > 365 else
@@ -424,7 +241,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
         age_t = Text(_human_days(m.days_since_commit), style=age_color, justify="right")
         row_cells.append(age_t)
 
-        # CHURN cell
         churn_color = (
             C_SKULL  if m.commit_count > 100 else
             C_ORANGE if m.commit_count > 50  else
@@ -434,7 +250,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
         churn_t = Text(str(m.commit_count), style=churn_color, justify="right")
         row_cells.append(churn_t)
 
-        # RECENT CHURN cell
         recent_color = (
             C_SKULL  if m.recent_churn > 30 else
             C_ORANGE if m.recent_churn > 15 else
@@ -447,7 +262,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
         recent_t.append(f" {arrow}", style=arrow_color)
         row_cells.append(recent_t)
 
-        # AUTHORS cell
         auth_color = (
             C_SKULL  if m.author_count > 10 else
             C_ORANGE if m.author_count > 6  else
@@ -457,7 +271,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
         auth_t = Text(str(m.author_count), style=auth_color, justify="right")
         row_cells.append(auth_t)
 
-        # COMPLEXITY cell
         if m.avg_complexity is not None:
             cx_val   = f"{m.avg_complexity:.1f}"
             cx_color = (
@@ -472,7 +285,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
         cx_t = Text(cx_val, style=cx_color, justify="right")
         row_cells.append(cx_t)
 
-        # COUPLING cell
         if has_coupling:
             coup_color = (
                 C_SKULL  if m.coupling_count > 15 else
@@ -483,7 +295,6 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
             coup_t = Text(str(m.coupling_count), style=coup_color, justify="right")
             row_cells.append(coup_t)
 
-        # ETA cell (decay prediction)
         if has_decay_col:
             pred = decay_predictions.get(m.path) if decay_predictions else None
             if pred is not None and pred.eta_days is not None:
@@ -493,13 +304,11 @@ def render_table(results: list[FileMetrics], show_blame: bool = False, decay_pre
                 eta_t = Text("—", style=C_DIM, justify="right")
             row_cells.append(eta_t)
 
-        # LAST AUTHOR cell (blame mode)
         if show_blame:
             author_display = _truncate(m.last_author, 12) if m.last_author else "—"
             author_t = Text(author_display, style=C_GREY, justify="left")
             row_cells.append(author_t)
 
-        # DIAGNOSIS cell
         diag_color = (
             C_SKULL     if m.status == "CRITICAL" else
             C_ORANGE    if m.status == "WARNING"  else
@@ -519,7 +328,7 @@ def render_footer(
     results: list[FileMetrics],
     repo_root: Path,
     show_blame: bool = False,
-    decay_predictions: Optional[dict] = None,
+    decay_predictions: dict | None = None,
 ) -> None:
     """Render the Most Wanted, Most Coupled, Quick Wins, Tips, and Security Alerts panels."""
     if not results:
@@ -527,7 +336,6 @@ def render_footer(
 
     worst_decay = None
     if decay_predictions:
-        # Find if the worst file has a decay prediction
         worst_decay = decay_predictions.get(results[0].path)
 
     _render_most_wanted(results[0], show_blame=show_blame, decay=worst_decay)
@@ -578,7 +386,6 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False, decay: obj
     _row("tests",     worst.test_score,          "Test file",    test_display)
     _row("coupling",  worst.coupling_score,      "Dependents",   str(worst.coupling_count))
 
-    # Dead code row (only meaningful for Python files)
     if worst.path.endswith(".py"):
         dead_display = (
             f"{worst.dead_code_count} unused symbol(s)"
@@ -587,7 +394,6 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False, decay: obj
         )
         _row("dead code", worst.dead_code_score, "Vulture", dead_display)
 
-    # Build header
     header = Text(justify="left")
     header.append(f"  {escape(worst.path)}", style=f"bold {C_WHITE}")
 
@@ -602,7 +408,6 @@ def _render_most_wanted(worst: FileMetrics, show_blame: bool = False, decay: obj
         style=f"bold {_score_color(worst.composite_score)}",
     )
 
-    # Importers line (if coupling data available)
     if worst.importers:
         header.append("\n", style="")
         importer_list = ", ".join(_truncate(p, 25) for p in worst.importers[:3])
@@ -882,7 +687,6 @@ def _render_decay_panel(decay_predictions: dict) -> None:
     if not decay_predictions:
         return
 
-    # Sort by eta_days ascending (most urgent first)
     sorted_preds = sorted(
         [p for p in decay_predictions.values() if p.eta_days is not None],
         key=lambda p: (p.eta_days or 9999),
@@ -922,7 +726,8 @@ def render_plan(plan: dict, repo_root: Path, output_format: str = "rich") -> Non
     """Render the refactoring roadmap — rich terminal view or markdown."""
     if output_format == "markdown":
         import click
-        from .planner import format_plan_markdown
+
+        from ..planner import format_plan_markdown
         click.echo(format_plan_markdown(plan, repo_root))
         return
     _render_plan_rich(plan)
@@ -981,8 +786,8 @@ def _render_plan_rich(plan: dict) -> None:
 
 def render_org_report(repos: list, org_path: Path) -> None:
     """Render the org-wide health table, sorted worst-first."""
-    from .org import org_combined_score
-    from .scoring import letter_grade
+    from ..org import org_combined_score
+    from ..scoring import letter_grade
 
     if not repos:
         console.print(Panel(
@@ -995,14 +800,14 @@ def render_org_report(repos: list, org_path: Path) -> None:
     org_grade = letter_grade(org_score)
     grade_color = _score_color(org_score)
 
-    # Org score summary
     org_summary = Text(justify="center")
     org_summary.append("ORG SCORE  ", style=f"dim {C_GREY}")
     org_summary.append(f"{org_grade} ({org_score})", style=f"bold {grade_color}")
     org_summary.append(f"  ·  {len(repos)} repositories scanned", style=f"dim {C_GREY}")
+    from rich.padding import Padding as _Padding
     console.print(
         Panel(
-            Padding(org_summary, (0, 2)),
+            _Padding(org_summary, (0, 2)),
             border_style=grade_color,
             box=box.HEAVY,
         )
@@ -1219,407 +1024,3 @@ def render_leaderboard(authors: list) -> None:
     )
     console.print(Align(note, align="center"))
     console.print()
-
-
-# ── Main entry points ──────────────────────────────────────────────────────────
-
-def run_display(
-    repo_path: Path,
-    top: int,
-    min_score: Optional[int],
-    ci_mode: bool = False,
-    since_ref: Optional[str] = None,
-    include_blame: bool = False,
-) -> None:
-    """Full deathbed run: header → scan → table → footer."""
-    from .analyzer import analyze_repo
-    from .history import enrich_with_history, get_repo_score_delta, save_scan
-    from .scoring import compute_repo_score
-
-    if not ci_mode:
-        render_header()
-
-    repo_root = repo_path
-    try:
-        from .git_utils import open_repo as _or, get_repo_root as _grr
-        repo_root = _grr(_or(repo_path))
-    except Exception:
-        pass
-
-    try:
-        start = time.monotonic()
-        results: list[FileMetrics] = []
-        total_scanned = 0
-        meta: dict = {}
-
-        with make_progress() as progress:
-            task = progress.add_task(
-                "Scanning repository",
-                total=None,
-                color=C_CRIMSON,
-                current_file="",
-            )
-
-            def on_progress(rel: str, idx: int, total: int) -> None:
-                nonlocal total_scanned
-                total_scanned = total
-                progress.update(
-                    task,
-                    total=total,
-                    completed=idx,
-                    current_file=_truncate(rel, 60) if rel else "",
-                )
-
-            results = analyze_repo(
-                repo_path,
-                top=top,
-                min_score=min_score,
-                on_progress=on_progress,
-                since_ref=since_ref,
-                include_blame=include_blame,
-                _meta=meta,
-            )
-
-        elapsed = time.monotonic() - start
-
-        if total_scanned == 0:
-            render_error(
-                "No files found",
-                "No analysable source files were found in the repository. "
-                "Make sure you are inside a git repo with tracked .py / .js / .ts / ... files.",
-            )
-            return
-
-        repo_score       = compute_repo_score(results)
-        enrich_with_history(results, repo_root)
-        repo_score_delta = get_repo_score_delta(repo_root, repo_score)
-        save_scan(repo_root, results, repo_score)
-
-        ignored_count = meta.get("ignored_count", 0)
-        since_count   = meta.get("since_count", 0)
-        lang_counts   = meta.get("lang_counts", {})
-
-        # Decay prediction (requires historical data)
-        decay_predictions: dict = {}
-        try:
-            from .decay import predict_decay
-            from .config import load_config
-            cfg = load_config(repo_root)
-            decay_cfg = cfg.get("decay", {})
-            thresh_cfg = cfg.get("thresholds", {})
-            decay_predictions = predict_decay(
-                repo_root,
-                results,
-                min_scans=decay_cfg.get("min_scans", 3),
-                horizon_days=decay_cfg.get("horizon_days", 30),
-                warning_threshold=thresh_cfg.get("warning", 65),
-                critical_threshold=thresh_cfg.get("critical", 40),
-            )
-        except Exception:
-            decay_predictions = {}
-
-        decaying_count = len(decay_predictions)
-
-        if ci_mode:
-            _run_ci(results, total_scanned)
-            return
-
-        render_summary(
-            results, total_scanned, elapsed,
-            repo_score=repo_score,
-            repo_score_delta=repo_score_delta,
-            since_ref=since_ref,
-            since_count=since_count,
-            ignored_count=ignored_count,
-            decaying_count=decaying_count,
-            lang_counts=lang_counts if lang_counts else None,
-        )
-        render_table(results, show_blame=include_blame, decay_predictions=decay_predictions or None)
-
-        non_healthy = [m for m in results if m.status != "HEALTHY"]
-        if non_healthy:
-            render_footer(non_healthy, repo_path, show_blame=include_blame,
-                          decay_predictions=decay_predictions or None)
-        else:
-            console.print(
-                Panel(
-                    f"[bold {C_GREEN}]  \u2705  All files look healthy. Great work![/]",
-                    border_style=C_DIM_GREEN,
-                )
-            )
-
-    except git.InvalidGitRepositoryError:
-        render_error(
-            "Not a git repository",
-            f"'{escape(str(repo_path))}' is not inside a git repository.\n"
-            "Run deathbed from within a git repo, or pass --path to a repo directory.",
-        )
-        sys.exit(1)
-    except git.NoSuchPathError:
-        render_error(
-            "Path not found",
-            f"The path '{escape(str(repo_path))}' does not exist.",
-        )
-        sys.exit(1)
-    except KeyboardInterrupt:
-        console.print(f"\n[dim {C_GREY}]Scan interrupted.[/]")
-        sys.exit(0)
-    except Exception as exc:
-        render_error("Unexpected error", str(exc))
-        sys.exit(1)
-
-
-def _run_ci(results: list[FileMetrics], total_scanned: int) -> None:
-    """CI mode: print minimal stats, exit 1 if any CRITICAL files."""
-    critical = [m for m in results if m.status == "CRITICAL"]
-    import click
-
-    if critical:
-        click.echo(
-            f"deathbed: {len(critical)} CRITICAL file(s) found out of {total_scanned} scanned.",
-            err=True,
-        )
-        for m in critical:
-            click.echo(f"  💀 {m.path}  score={m.composite_score}  [{m.diagnosis}]", err=True)
-        sys.exit(1)
-    else:
-        click.echo(
-            f"deathbed: 0 CRITICAL files. {total_scanned} files scanned — all passing CI threshold."
-        )
-
-
-def run_watch_display(
-    repo_path: Path,
-    top: int,
-    min_score: Optional[int],
-    interval: int = 30,
-) -> None:
-    """Run the full display in a loop, clearing and re-rendering every interval seconds."""
-    console.print(
-        f"[bold {C_CRIMSON}]Watch mode — refreshing every {interval}s · Ctrl+C to stop[/]"
-    )
-    try:
-        while True:
-            console.clear()
-            run_display(repo_path, top, min_score)
-            console.print(
-                f"[dim {C_GREY}]⟳ Next refresh in {interval}s · Ctrl+C to stop[/]"
-            )
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        console.print(f"\n[dim {C_GREY}]Watch mode stopped.[/]")
-        sys.exit(0)
-
-
-def run_diff_display(
-    repo_path: Path,
-    ref: str,
-    top: int,
-    min_score: Optional[int],
-) -> None:
-    """Run the diff analysis and display the comparison table."""
-    from .analyzer import analyze_diff
-
-    render_header()
-
-    try:
-        start = time.monotonic()
-        total_scanned = 0
-
-        with make_progress() as progress:
-            task = progress.add_task(
-                f"Comparing HEAD vs {ref}",
-                total=None,
-                color=C_CRIMSON,
-                current_file="",
-            )
-
-            def on_progress(rel: str, idx: int, total: int) -> None:
-                nonlocal total_scanned
-                total_scanned = total
-                progress.update(
-                    task, total=total, completed=idx,
-                    current_file=_truncate(rel, 60) if rel else "",
-                )
-
-            current, historical = analyze_diff(
-                repo_path, ref,
-                top=top, min_score=min_score,
-                on_progress=on_progress,
-            )
-
-        elapsed = time.monotonic() - start
-
-        if total_scanned == 0:
-            render_error("No files found", "No analysable source files found.")
-            return
-
-        render_diff(current, historical, ref)
-
-    except git.InvalidGitRepositoryError:
-        render_error("Not a git repository", str(repo_path))
-        sys.exit(1)
-    except Exception as exc:
-        render_error("Diff failed", str(exc))
-        sys.exit(1)
-
-
-def run_leaderboard_display(
-    repo_path: Path,
-    top: int,
-    min_score: Optional[int],
-) -> None:
-    """Run blame-based analysis and display the team leaderboard."""
-    from .analyzer import analyze_leaderboard
-
-    render_header()
-
-    try:
-        with make_progress() as progress:
-            progress.add_task(
-                "Building leaderboard",
-                total=None,
-                color=C_CRIMSON,
-                current_file="",
-            )
-            authors = analyze_leaderboard(repo_path)
-
-        render_leaderboard(authors)
-
-    except git.InvalidGitRepositoryError:
-        render_error("Not a git repository", str(repo_path))
-        sys.exit(1)
-    except Exception as exc:
-        render_error("Leaderboard failed", str(exc))
-        sys.exit(1)
-
-
-def run_org_display(
-    org_path: Path,
-    top: int,
-    min_score: Optional[int],
-    output_format: str = "rich",
-) -> None:
-    """Scan all repos in org_path and show the org-wide health report."""
-    from .org import analyze_org
-
-    render_org_header()
-
-    try:
-        with make_progress() as progress:
-            progress.add_task(
-                "Scanning repositories",
-                total=None,
-                color=C_CRIMSON,
-                current_file="",
-            )
-            repos = analyze_org(org_path)
-
-        if output_format == "json":
-            import json
-            import click
-            payload = {
-                "version": "3.0.0",
-                "org": str(org_path),
-                "repos": [
-                    {
-                        "name":           r.name,
-                        "path":           str(r.path),
-                        "repo_score":     r.repo_score,
-                        "grade":          r.grade,
-                        "critical_count": r.critical_count,
-                        "warning_count":  r.warning_count,
-                        "file_count":     r.file_count,
-                        "worst_file":     r.worst_file,
-                        "worst_score":    r.worst_score,
-                        "error":          r.error,
-                    }
-                    for r in repos
-                ],
-            }
-            click.echo(json.dumps(payload, indent=2))
-            return
-
-        render_org_report(repos, org_path)
-
-    except Exception as exc:
-        render_error("Org scan failed", str(exc))
-        sys.exit(1)
-
-
-def run_plan_display(
-    repo_path: Path,
-    top: int,
-    min_score: Optional[int],
-    output_format: str = "rich",
-) -> None:
-    """Analyse the repo and render the refactoring plan."""
-    from .analyzer import analyze_repo
-    from .planner import generate_plan
-    from .git_utils import open_repo as _or, get_repo_root as _grr
-
-    repo_root = repo_path
-    try:
-        repo_root = _grr(_or(repo_path))
-    except Exception:
-        pass
-
-    if output_format != "markdown":
-        render_header()
-
-    try:
-        with make_progress() as progress:
-            task = progress.add_task(
-                "Analysing for refactor plan",
-                total=None,
-                color=C_CRIMSON,
-                current_file="",
-            )
-            results = analyze_repo(repo_path, top=0, min_score=min_score)
-
-        plan = generate_plan(results, repo_root)
-        render_plan(plan, repo_root, output_format=output_format)
-
-    except git.InvalidGitRepositoryError:
-        render_error("Not a git repository", str(repo_path))
-        sys.exit(1)
-    except Exception as exc:
-        render_error("Plan generation failed", str(exc))
-        sys.exit(1)
-
-
-def run_heatmap_display(
-    repo_path: Path,
-    top: int,
-    min_score: Optional[int],
-) -> None:
-    """Analyse the repo and render the terminal treemap heatmap."""
-    from .analyzer import analyze_repo
-    from .heatmap import render_heatmap
-
-    render_header()
-
-    try:
-        with make_progress() as progress:
-            task = progress.add_task(
-                "Scanning for heatmap",
-                total=None,
-                color=C_CRIMSON,
-                current_file="",
-            )
-            results = analyze_repo(repo_path, top=0, min_score=min_score)
-
-        if not results:
-            render_error("No files found", "No analysable source files found.")
-            return
-
-        # For heatmap, sort by lines descending so largest files are first
-        results_by_size = sorted(results, key=lambda m: m.lines, reverse=True)
-        render_heatmap(results_by_size)
-
-    except git.InvalidGitRepositoryError:
-        render_error("Not a git repository", str(repo_path))
-        sys.exit(1)
-    except Exception as exc:
-        render_error("Heatmap failed", str(exc))
-        sys.exit(1)

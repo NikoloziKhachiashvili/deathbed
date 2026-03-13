@@ -3,30 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+
+__all__ = ["FileMetrics", "compute_scores", "compute_repo_score", "letter_grade", "WEIGHTS"]
 
 
 @dataclass
 class FileMetrics:
+    # ── Identity ──
     path: str
+
+    # ── Raw metrics (inputs) ──
     lines: int = 0
     days_since_commit: int = 0
     commit_count: int = 0
     author_count: int = 0
-    avg_complexity: Optional[float] = None
+    avg_complexity: float | None = None
     has_test_file: bool = False
     test_file_recent: bool = False
-    recent_churn: int = 0   # commits in last 90 days
-    prev_churn: int = 0     # commits in prior 90 days (days 91-180)
+    test_has_assertions: bool = True
+    recent_churn: int = 0
+    prev_churn: int = 0
+    dead_code_count: int = 0
+    has_security_smell: bool = False
+    security_smells: list[str] = field(default_factory=list)
+    clone_similarity: float = 0.0
+    clone_of: str = ""
+    coupling_count: int = 0
+    importers: list[str] = field(default_factory=list)
 
-    # v1.2.0 fields
-    dead_code_count: int = 0          # unused symbols found by vulture
-    has_security_smell: bool = False   # dangerous import patterns found
-    security_smells: list = field(default_factory=list)  # list of smell descriptions
-    clone_similarity: float = 0.0     # highest similarity ratio to any other file
-    clone_of: str = ""                # path of the most similar file
-
-    # Individual scores (0–100, higher = healthier)
+    # ── Individual scores (0–100, higher = healthier) ──
     size_score: int = 100
     age_score: int = 100
     churn_score: int = 100
@@ -35,27 +40,20 @@ class FileMetrics:
     test_score: int = 100
     recent_churn_score: int = 100
     dead_code_score: int = 100
-    coupling_score: int = 100   # v2.0.0
+    coupling_score: int = 100
 
-    # Derived flags
+    # ── Derived / display ──
     heating_up: bool = False
-    churn_trend: str = "stable"   # "up", "down", or "stable"
-
-    # v1.3.0 fields
-    last_author: str = ""          # name of the most recent committer
-    last_commit_msg: str = ""      # subject line of the most recent commit
-    score_delta: Optional[int] = None   # vs last history scan (positive = improved)
-    sparkline: str = ""            # up-to-5-char sparkline from history (▁▂▃▄▅▆▇█)
-
-    # v2.0.0 fields
-    coupling_count: int = 0                      # how many other files import this
-    importers: list = field(default_factory=list) # file paths that import this (max 5)
-    test_has_assertions: bool = True             # False → "test theatre" diagnosis
-
-    # Composite
+    churn_trend: str = "stable"
     composite_score: int = 100
     diagnosis: str = "healthy"
     status: str = "HEALTHY"
+
+    # ── Blame & history (optional, populated by flags) ──
+    last_author: str = ""
+    last_commit_msg: str = ""
+    score_delta: int | None = None
+    sparkline: str = ""
 
 
 # ── Weights (v2.0.0 — coupling at 10%, others reduced proportionally) ─────────
@@ -125,7 +123,7 @@ def _recent_churn_score(recent: int) -> int:
     return max(0, 20 - (recent - 30))  # red zone
 
 
-def _complexity_score(avg: Optional[float]) -> int:
+def _complexity_score(avg: float | None) -> int:
     if avg is None:
         return 75  # neutral / non-Python file
     if avg <= 2:
@@ -239,9 +237,8 @@ def _diagnose(m: FileMetrics) -> str:
         return "haunted" + suffix
 
     # 7. Ownership void: abandoned by a single author
-    if m.days_since_commit >= 180 and m.author_count <= 1 and m.commit_count > 0:
-        if m.age_score < 45:
-            return "ownership void" + suffix
+    if m.days_since_commit >= 180 and m.author_count <= 1 and m.commit_count > 0 and m.age_score < 45:
+        return "ownership void" + suffix
 
     if m.composite_score >= 86:
         return "healthy"
@@ -308,7 +305,7 @@ def _status(score: int) -> str:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def compute_scores(m: FileMetrics) -> FileMetrics:
+def compute_scores(m: FileMetrics) -> None:
     """Fill in all score fields and composite, in-place."""
     from pathlib import Path as _Path
     _suffix = _Path(m.path).suffix.lower()
@@ -361,4 +358,3 @@ def compute_scores(m: FileMetrics) -> FileMetrics:
 
     m.status    = _status(m.composite_score)
     m.diagnosis = _diagnose(m)
-    return m

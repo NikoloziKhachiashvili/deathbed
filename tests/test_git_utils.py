@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-
-import pytest
-
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from deathbed.git_utils import (
     count_lines,
@@ -16,7 +13,6 @@ from deathbed.git_utils import (
     get_last_author,
     run_vulture,
 )
-
 
 # ── count_lines ───────────────────────────────────────────────────────────────
 
@@ -158,7 +154,6 @@ def test_run_vulture_missing_file():
 # ── get_last_author ───────────────────────────────────────────────────────────
 
 def test_get_last_author_returns_strings():
-    import git
     mock_repo = MagicMock()
     mock_repo.git.log.return_value = "Alice\x1ffix: resolve crash on startup"
     name, msg = get_last_author(mock_repo, "src/foo.py")

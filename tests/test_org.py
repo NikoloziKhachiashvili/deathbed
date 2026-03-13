@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from deathbed.org import OrgRepoStats, analyze_org, org_combined_score
-
 
 # ── OrgRepoStats ──────────────────────────────────────────────────────────────
 

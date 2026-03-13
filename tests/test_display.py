@@ -4,28 +4,27 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from deathbed.display import (
     _health_icon,
     _human_days,
+    _render_most_wanted,
+    _render_quick_wins,
+    _render_security_alerts,
+    _render_tips,
+    _row_style,
     _score_bar,
     _score_color,
     _truncate,
-    _row_style,
     render_diff,
+    render_error,
+    render_footer,
+    render_header,
     render_markdown,
     render_summary,
     render_table,
-    render_header,
-    render_error,
-    render_footer,
-    _render_most_wanted,
-    _render_quick_wins,
-    _render_tips,
-    _render_security_alerts,
 )
 from deathbed.scoring import FileMetrics, compute_scores
 
@@ -110,7 +109,7 @@ def test_human_days_year():
     assert "y" in _human_days(400)
 
 def test_human_days_year_with_months():
-    assert "1y 1mo ago" == _human_days(400)
+    assert _human_days(400) == "1y 1mo ago"
 
 def test_human_days_exact_year():
     assert _human_days(365) == "1y ago"
@@ -375,8 +374,8 @@ def test_render_most_wanted_blame_no_author():
 
 
 def test_render_leaderboard_no_crash():
-    from deathbed.display import render_leaderboard
     from deathbed.analyzer import AuthorStats
+    from deathbed.display import render_leaderboard
     authors = [
         AuthorStats("alice", 5, 72.0, 1, 2, "C"),
         AuthorStats("bob",   3, 88.0, 0, 1, "A"),

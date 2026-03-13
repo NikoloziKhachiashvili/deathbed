@@ -53,8 +53,8 @@ def generate_badge_markdown(repo_path: Path) -> str:
     Reads the last saved repo score from history if available, otherwise
     runs a quick scan to compute one.
     """
+    from .git_utils import get_repo_root, open_repo
     from .history import load_history
-    from .git_utils import open_repo, get_repo_root
     from .scoring import letter_grade
 
     score = 0

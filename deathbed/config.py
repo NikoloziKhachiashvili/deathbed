@@ -1,6 +1,12 @@
 """Configuration loader for .deathbed.toml — optional TOML config file."""
 from __future__ import annotations
+
+import logging
 from pathlib import Path
+
+log = logging.getLogger(__name__)
+
+__all__ = ["load_config"]
 
 _DEFAULTS: dict = {
     "thresholds": {"warning": 65, "critical": 40},
@@ -9,25 +15,24 @@ _DEFAULTS: dict = {
     "decay": {"min_scans": 3, "horizon_days": 30},
 }
 
+
 def _try_load_toml(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        with open(path, "rb") as fh:
-            try:
-                import tomllib
-                return tomllib.load(fh)
-            except ImportError:
-                pass
+        import tomllib
+    except ImportError:
         try:
-            import tomli  # type: ignore
-            with open(path, "rb") as fh2:
-                return tomli.load(fh2)
+            import tomli as tomllib  # type: ignore[no-redef]
         except ImportError:
-            pass
-    except Exception:
-        pass
-    return {}
+            return {}
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except Exception as exc:
+        log.debug("Failed to load TOML config %s: %s", path, exc)
+        return {}
+
 
 def load_config(repo_root: Path) -> dict:
     """Load and merge config from ~/.deathbed/config.toml and <repo>/.deathbed.toml."""

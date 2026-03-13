@@ -1,6 +1,7 @@
 """Terminal treemap heat map renderer for the codebase."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from rich import box
@@ -9,12 +10,24 @@ from rich.text import Text
 
 from .scoring import FileMetrics
 
+log = logging.getLogger(__name__)
+
+__all__ = ["render_heatmap"]
+
 
 # Import palette from display to keep colours consistent
 def _get_palette():
     from .display import (
-        C_GREEN, C_AMBER, C_ORANGE, C_SKULL, C_RED5, C_CRIMSON,
-        C_DIM, C_WHITE, C_GREY, console,
+        C_AMBER,
+        C_CRIMSON,
+        C_DIM,
+        C_GREEN,
+        C_GREY,
+        C_ORANGE,
+        C_RED5,
+        C_SKULL,
+        C_WHITE,
+        console,
     )
     return C_GREEN, C_AMBER, C_ORANGE, C_SKULL, C_RED5, C_CRIMSON, C_DIM, C_WHITE, C_GREY, console
 
@@ -39,7 +52,7 @@ def _heatmap_char(score: int) -> str:
     return "\u2591"        # ░
 
 
-def render_heatmap(results: list) -> None:
+def render_heatmap(results: list[FileMetrics]) -> None:
     """
     Render a terminal treemap heatmap of the codebase.
     Each file is a rectangle sized proportional to its line count,

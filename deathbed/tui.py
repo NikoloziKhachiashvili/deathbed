@@ -2,24 +2,24 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 
 def run_interactive(
     repo_path: Path,
     top: int,
-    min_score: Optional[int],
-    since_ref: Optional[str] = None,
+    min_score: int | None,
+    since_ref: str | None = None,
     include_blame: bool = False,
-    org_path: Optional[Path] = None,
+    org_path: Path | None = None,
 ) -> None:
     """Launch the interactive TUI. Falls back to rich display if textual unavailable."""
     try:
         import textual  # noqa: F401
     except ImportError:
-        from .display import console
-        from rich.panel import Panel
         from rich import box
+        from rich.panel import Panel
+
+        from .display import console
         console.print(Panel(
             "[bold rgb(255,191,0)]  textual is not installed.\n\n"
             "  Install it with:\n"
@@ -42,27 +42,26 @@ def run_interactive(
 def _run_textual_app(
     repo_path: Path,
     top: int,
-    min_score: Optional[int],
-    since_ref: Optional[str],
+    min_score: int | None,
+    since_ref: str | None,
     include_blame: bool,
-    org_path: Optional[Path],
+    org_path: Path | None,
 ) -> None:
     """Launch the full Textual TUI app."""
     from textual.app import App, ComposeResult
     from textual.binding import Binding
-    from textual.widgets import DataTable, Footer, Input, Static
     from textual.screen import Screen
+    from textual.widgets import DataTable, Footer, Input, Static
 
     from .analyzer import analyze_repo
-    from .scoring import compute_repo_score, letter_grade
+    from .display import _health_icon, _human_days, _truncate
+    from .git_utils import get_repo_root, open_repo
     from .history import enrich_with_history, save_scan
-    from .git_utils import open_repo as _or, get_repo_root as _grr
-    from .display import _truncate, _human_days, _health_icon
-    from .scoring import FileMetrics
+    from .scoring import FileMetrics, compute_repo_score, letter_grade
 
     # Pre-scan
     try:
-        repo_root = _grr(_or(repo_path))
+        repo_root = get_repo_root(open_repo(repo_path))
     except Exception:
         repo_root = repo_path
 

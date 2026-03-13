@@ -1,12 +1,13 @@
 """Tests for heatmap.py — terminal treemap renderer."""
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from deathbed.heatmap import (
-    _heatmap_color,
     _heatmap_char,
+    _heatmap_color,
     render_heatmap,
 )
 from deathbed.scoring import FileMetrics, compute_scores

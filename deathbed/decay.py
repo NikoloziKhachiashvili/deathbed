@@ -1,26 +1,31 @@
 """Decay prediction: linear trend analysis on historical scan data."""
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from .history import load_history
+from .scoring import FileMetrics
+
+log = logging.getLogger(__name__)
+
+__all__ = ["DecayPrediction", "predict_decay"]
 
 
 @dataclass
 class DecayPrediction:
     file_path: str
     slope_per_week: float           # points per week (negative = declining)
-    days_to_warning: Optional[int]  # days until score crosses warning_threshold
-    days_to_critical: Optional[int] # days until score crosses critical_threshold
-    eta_days: Optional[int]         # min(days_to_warning, days_to_critical)
-    target_threshold: Optional[int] # threshold it will cross first
+    days_to_warning: int | None  # days until score crosses warning_threshold
+    days_to_critical: int | None # days until score crosses critical_threshold
+    eta_days: int | None         # min(days_to_warning, days_to_critical)
+    target_threshold: int | None # threshold it will cross first
     current_score: int
 
 
-def _linear_regression(xs: list, ys: list) -> tuple:
+def _linear_regression(xs: list[float], ys: list[float]) -> tuple[float, float]:
     """Return (slope, intercept) of the least-squares line."""
     n = len(xs)
     if n < 2:
@@ -39,13 +44,13 @@ def _linear_regression(xs: list, ys: list) -> tuple:
 
 def predict_decay(
     repo_root: Path,
-    results: list,
+    results: list[FileMetrics],
     *,
     min_scans: int = 3,
     horizon_days: int = 30,
     warning_threshold: int = 65,
     critical_threshold: int = 40,
-) -> dict:
+) -> dict[str, DecayPrediction]:
     """
     For each file with >=min_scans historical data points, fit a linear
     trend and extrapolate to find when score will cross a threshold.
@@ -55,15 +60,15 @@ def predict_decay(
     if not scans:
         return {}
 
-    file_history: dict = {}
+    file_history: dict[str, list[tuple[int, int]]] = {}
     for scan in scans:
         ts = scan.get("timestamp", 0)
         for path, score in scan.get("files", {}).items():
             file_history.setdefault(path, []).append((ts, score))
 
-    current_scores: dict = {m.path: m.composite_score for m in results}
+    current_scores: dict[str, int] = {m.path: m.composite_score for m in results}
     now = int(time.time())
-    predictions: dict = {}
+    predictions: dict[str, DecayPrediction] = {}
 
     for file_path, history in file_history.items():
         if len(history) < min_scans:
@@ -74,8 +79,8 @@ def predict_decay(
 
         history_sorted = sorted(history, key=lambda x: x[0])
         t0 = history_sorted[0][0]
-        xs = [(ts - t0) / 86400.0 for ts, _ in history_sorted]
-        ys = [float(s) for _, s in history_sorted]
+        xs: list[float] = [(ts - t0) / 86400.0 for ts, _ in history_sorted]
+        ys: list[float] = [float(s) for _, s in history_sorted]
         xs.append((now - t0) / 86400.0)
         ys.append(float(current_score))
 
@@ -90,17 +95,17 @@ def predict_decay(
 
         now_x = (now - t0) / 86400.0
 
-        def _days_to_cross(threshold: int) -> Optional[int]:
-            if current_score <= threshold:
+        def _days_to_cross(threshold: int, cs: int, ic: float, sl: float, nx: float) -> int | None:
+            if cs <= threshold:
                 return None
-            d = (threshold - intercept - slope * now_x) / slope
+            d = (threshold - ic - sl * nx) / sl
             if d <= 0:
                 return None
             days = int(d)
             return days if days <= horizon_days else None
 
-        d_warn = _days_to_cross(warning_threshold)
-        d_crit = _days_to_cross(critical_threshold)
+        d_warn = _days_to_cross(warning_threshold, current_score, intercept, slope, now_x)
+        d_crit = _days_to_cross(critical_threshold, current_score, intercept, slope, now_x)
 
         if d_warn is None and d_crit is None:
             continue

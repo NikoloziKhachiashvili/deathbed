@@ -1,11 +1,11 @@
 """Tests for hook.py — git regression guard install/uninstall."""
 from __future__ import annotations
 
-import os
-import pytest
 from pathlib import Path
 
-from deathbed.hook import install_hook, uninstall_hook, _HOOK_MARKER
+import pytest
+
+from deathbed.hook import _HOOK_MARKER, install_hook, uninstall_hook
 
 
 def _make_fake_repo(tmp_path: Path) -> Path:
